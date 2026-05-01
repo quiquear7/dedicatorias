@@ -1,0 +1,14 @@
+.venv/
+.env
+.streamlit/secrets.toml
+data/
+__pycache__/
+*.pyc
+.idea/
+*.iml
+.DS_Store
+.python-version
+.pytest_cache/
+*.egg-info/
+dist/
+build/
