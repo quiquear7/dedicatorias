@@ -5,9 +5,12 @@ from collections import defaultdict
 import streamlit as st
 
 from core import contacts as contacts_module
+from core.auth import logout_button, require_login
 from core.config import get_config
 
 st.set_page_config(page_title="Destinatarios", page_icon="👥", layout="wide")
+require_login()
+logout_button()
 st.title("👥 Destinatarios")
 st.caption("Gestiona las personas para las que vas a generar dedicatorias, agrupadas por categoría (familia, amigos, trabajo, etc.).")
 

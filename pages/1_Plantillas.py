@@ -6,11 +6,14 @@ from typing import Optional
 import streamlit as st
 
 from core import templates as templates_module
+from core.auth import logout_button, require_login
 from core.config import get_config
 from core.models import Template, TextStyle, Zone
 from core.rendering import PREVIEW_DPI, render_preview
 
 st.set_page_config(page_title="Plantillas", page_icon="🎨", layout="wide")
+require_login()
+logout_button()
 st.title("🎨 Plantillas de tarjeta")
 st.caption("Sube el diseño de tu tarjeta, define las medidas y la zona donde irá la dedicatoria.")
 

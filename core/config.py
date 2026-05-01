@@ -44,6 +44,7 @@ class AppConfig:
     s3_access_key: Optional[str]
     s3_secret_key: Optional[str]
     s3_region: str
+    app_password: Optional[str]
 
     @property
     def is_ai_ready(self) -> bool:
@@ -95,6 +96,7 @@ def get_config() -> AppConfig:
         s3_access_key=_get("S3_ACCESS_KEY"),
         s3_secret_key=_get("S3_SECRET_KEY"),
         s3_region=_get("S3_REGION") or "auto",
+        app_password=_get("APP_PASSWORD"),
     )
 
 

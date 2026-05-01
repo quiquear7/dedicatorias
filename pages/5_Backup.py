@@ -5,9 +5,12 @@ from datetime import datetime
 import streamlit as st
 
 from core import backup as backup_module
+from core.auth import logout_button, require_login
 from core.config import get_config
 
 st.set_page_config(page_title="Backup", page_icon="💾", layout="centered")
+require_login()
+logout_button()
 st.title("💾 Backup y restauración")
 st.caption("Descarga una copia completa de tus plantillas, contactos e historial, o restaura desde un ZIP previo.")
 

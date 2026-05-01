@@ -7,6 +7,7 @@ import streamlit as st
 from core import contacts as contacts_module
 from core import history as history_module
 from core import templates as templates_module
+from core.auth import logout_button, require_login
 from core.config import get_config
 from core.correction import correct_dedication
 from core.models import Contact, Template
@@ -14,6 +15,8 @@ from core.rendering import render_pdf, render_png, render_preview
 from core.transcription import transcribe
 
 st.set_page_config(page_title="Generar dedicatoria", page_icon="✍️", layout="wide")
+require_login()
+logout_button()
 st.title("✍️ Generar dedicatoria")
 
 cfg = get_config()

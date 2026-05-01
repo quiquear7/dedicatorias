@@ -6,9 +6,12 @@ import streamlit as st
 
 from core import history as history_module
 from core import templates as templates_module
+from core.auth import logout_button, require_login
 from core.config import get_config, get_storage
 
 st.set_page_config(page_title="Historial", page_icon="📜", layout="wide")
+require_login()
+logout_button()
 st.title("📜 Historial de dedicatorias")
 st.caption("Consulta dedicatorias pasadas, vuelve a descargarlas o duplícalas para otra persona.")
 

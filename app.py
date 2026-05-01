@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import streamlit as st
 
+from core.auth import logout_button, require_login
 from core.config import get_config
 
 st.set_page_config(page_title="Dedicatorias", page_icon="💌", layout="centered")
+require_login()
+logout_button()
 st.title("💌 Generador de tarjetas de dedicatoria")
 
 cfg = get_config()
