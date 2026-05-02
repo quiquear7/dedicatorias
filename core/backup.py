@@ -1,13 +1,19 @@
 from __future__ import annotations
 
 import io
+import re
 import zipfile
-from datetime import datetime
-from typing import Iterable
+from datetime import datetime, timedelta, timezone
+from typing import Iterable, List, Optional, Tuple
 
 from core.config import get_storage
 
 BACKUP_PREFIXES = ("templates/", "contacts/", "history/")
+SNAPSHOT_PREFIX = "backups/"
+SNAPSHOT_MARKER = SNAPSHOT_PREFIX + "_last_snapshot.txt"
+SNAPSHOT_PATTERN = re.compile(r"^backups/snapshot-(\d{8}-\d{6})\.zip$")
+DEFAULT_MIN_HOURS = 24.0
+DEFAULT_MAX_KEEP = 14
 
 
 def _all_paths() -> list[str]:
@@ -95,3 +101,102 @@ def human_size(num_bytes: int) -> str:
             return f"{num_bytes:.1f} {unit}"
         num_bytes /= 1024.0
     return f"{num_bytes:.1f} TB"
+
+
+def list_snapshots() -> List[Tuple[str, datetime, int]]:
+    """Devuelve una lista de (path, fecha_creacion_utc, tamano_bytes) ordenada por fecha desc."""
+    storage = get_storage()
+    paths = storage.list(SNAPSHOT_PREFIX)
+    snapshots: List[Tuple[str, datetime, int]] = []
+    for path in paths:
+        match = SNAPSHOT_PATTERN.match(path)
+        if not match:
+            continue
+        try:
+            ts = datetime.strptime(match.group(1), "%Y%m%d-%H%M%S").replace(tzinfo=timezone.utc)
+        except ValueError:
+            continue
+        try:
+            size = len(storage.get(path))
+        except Exception:
+            size = 0
+        snapshots.append((path, ts, size))
+    snapshots.sort(key=lambda s: s[1], reverse=True)
+    return snapshots
+
+
+def _read_marker() -> Optional[datetime]:
+    storage = get_storage()
+    if not storage.exists(SNAPSHOT_MARKER):
+        return None
+    try:
+        raw = storage.get(SNAPSHOT_MARKER).decode("utf-8").strip()
+        return datetime.fromisoformat(raw)
+    except Exception:
+        return None
+
+
+def auto_snapshot_if_needed(
+    min_hours: float = DEFAULT_MIN_HOURS,
+    max_keep: int = DEFAULT_MAX_KEEP,
+) -> Optional[str]:
+    """Crea un snapshot dentro del bucket si han pasado más de `min_hours` desde el último.
+    Devuelve la ruta del snapshot creado o None si no hizo falta."""
+    storage = get_storage()
+    now = datetime.now(timezone.utc)
+
+    last = _read_marker()
+    if last is not None and (now - last) < timedelta(hours=min_hours):
+        return None
+
+    paths = [p for p in _all_paths() if not p.startswith(SNAPSHOT_PREFIX)]
+    if not paths:
+        # Aunque no haya datos, marcamos para no reintentar continuamente.
+        storage.put(SNAPSHOT_MARKER, now.isoformat(timespec="seconds").encode("utf-8"))
+        return None
+
+    ts_str = now.strftime("%Y%m%d-%H%M%S")
+    snap_path = f"{SNAPSHOT_PREFIX}snapshot-{ts_str}.zip"
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for path in sorted(paths):
+            try:
+                zf.writestr(path, storage.get(path))
+            except Exception:
+                continue
+        zf.writestr(
+            "MANIFEST.txt",
+            f"Snapshot automático\nCreado: {now.isoformat(timespec='seconds')}\nArchivos: {len(paths)}\n",
+        )
+
+    storage.put(snap_path, buf.getvalue())
+    storage.put(SNAPSHOT_MARKER, now.isoformat(timespec="seconds").encode("utf-8"))
+
+    # Podar antiguos
+    snapshots = list_snapshots()
+    if len(snapshots) > max_keep:
+        for old_path, _, _ in snapshots[max_keep:]:
+            try:
+                storage.delete(old_path)
+            except Exception:
+                continue
+
+    return snap_path
+
+
+def restore_snapshot(snapshot_path: str, *, overwrite: bool = True) -> dict:
+    """Restaura desde un snapshot guardado en el propio bucket."""
+    storage = get_storage()
+    data = storage.get(snapshot_path)
+    return restore_from_zip(data, overwrite=overwrite)
+
+
+def delete_snapshot(snapshot_path: str) -> bool:
+    storage = get_storage()
+    if not SNAPSHOT_PATTERN.match(snapshot_path):
+        return False
+    if not storage.exists(snapshot_path):
+        return False
+    storage.delete(snapshot_path)
+    return True

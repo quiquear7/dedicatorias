@@ -89,6 +89,15 @@ def save_generated(
     index = _load_index()
     index[dedication_id] = dedication.to_dict()
     _save_index(index)
+
+    # Snapshot automático silencioso (no bloquea si falla).
+    try:
+        from core.backup import auto_snapshot_if_needed
+
+        auto_snapshot_if_needed()
+    except Exception:
+        pass
+
     return dedication
 
 

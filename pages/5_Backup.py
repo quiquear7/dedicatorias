@@ -70,6 +70,85 @@ if st.session_state.get("_backup_zip"):
     st.caption("Guarda el archivo en un sitio seguro (iCloud, Dropbox, disco externo).")
 
 st.divider()
+st.subheader("📸 Snapshots automáticos")
+st.caption(
+    "La app crea automáticamente un snapshot ZIP dentro del propio bucket cada vez que "
+    "guardas una dedicatoria nueva y han pasado al menos 24 h desde el último. "
+    "Se mantienen los 14 más recientes."
+)
+
+cols = st.columns([1, 1])
+with cols[0]:
+    if st.button("📸 Crear snapshot ahora"):
+        with st.spinner("Creando snapshot..."):
+            try:
+                # Forzar ignorando el marker
+                from core.backup import auto_snapshot_if_needed
+                # Truco: pasamos min_hours=0 para que no aplique el filtro
+                snap = auto_snapshot_if_needed(min_hours=0)
+                if snap:
+                    st.success(f"Snapshot creado: `{snap}`")
+                else:
+                    st.info("No hay datos que respaldar todavía.")
+            except Exception as e:  # noqa: BLE001
+                st.error(f"Error: {e}")
+        st.rerun()
+
+with cols[1]:
+    if st.button("🔄 Refrescar listado"):
+        st.rerun()
+
+snapshots = backup_module.list_snapshots()
+if not snapshots:
+    st.info("Aún no hay snapshots automáticos. Genera una dedicatoria o pulsa el botón de arriba.")
+else:
+    for path, ts, size in snapshots:
+        with st.expander(f"📸 {ts.strftime('%Y-%m-%d %H:%M:%S')} UTC · {backup_module.human_size(size)}"):
+            st.code(path, language="text")
+            actions = st.columns(3)
+            with actions[0]:
+                try:
+                    from core.config import get_storage as _gs
+                    snap_data = _gs().get(path)
+                    st.download_button(
+                        "⬇️ Descargar",
+                        data=snap_data,
+                        file_name=path.split("/")[-1],
+                        mime="application/zip",
+                        key=f"dl_{path}",
+                        use_container_width=True,
+                    )
+                except Exception as e:  # noqa: BLE001
+                    st.write(f"No disponible: {e}")
+            with actions[1]:
+                if st.button("♻️ Restaurar", key=f"rs_{path}", help="Restaurar este snapshot"):
+                    st.session_state[f"_confirm_restore_{path}"] = True
+            with actions[2]:
+                if st.button("🗑️ Eliminar", key=f"rm_{path}"):
+                    backup_module.delete_snapshot(path)
+                    st.toast("Snapshot eliminado.")
+                    st.rerun()
+            if st.session_state.get(f"_confirm_restore_{path}"):
+                st.warning("Esto sobreescribe los datos actuales. ¿Seguro?")
+                cc = st.columns(2)
+                with cc[0]:
+                    if st.button("Sí, restaurar", key=f"yes_{path}", type="primary"):
+                        with st.spinner("Restaurando..."):
+                            try:
+                                summary = backup_module.restore_snapshot(path)
+                                st.success(f"Restaurados {summary['restored']} archivos.")
+                                if summary["errors"]:
+                                    st.warning(f"{len(summary['errors'])} avisos.")
+                            except Exception as e:  # noqa: BLE001
+                                st.error(f"Error: {e}")
+                        st.session_state.pop(f"_confirm_restore_{path}", None)
+                        st.rerun()
+                with cc[1]:
+                    if st.button("Cancelar", key=f"no_{path}"):
+                        st.session_state.pop(f"_confirm_restore_{path}", None)
+                        st.rerun()
+
+st.divider()
 st.subheader("⬆️ Restaurar desde backup")
 st.warning(
     "Restaurar **sobreescribe** los archivos existentes con el mismo nombre. "
