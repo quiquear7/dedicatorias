@@ -1,4 +1,4 @@
-streamlit>=1.31
+streamlit>=1.32
 openai>=1.12
 google-genai>=0.5
 pillow>=10.0
