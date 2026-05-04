@@ -138,21 +138,28 @@ class Dedication:
     raw_input: str
     corrected_text: str
     final_text: str
-    template_id: str
-    template_snapshot: Dict[str, Any]
-    card_pdf_path: str
-    card_png_path: str
+    status: Literal["pending", "rendered"] = "pending"
+    template_id: Optional[str] = None
+    template_snapshot: Optional[Dict[str, Any]] = None
+    card_pdf_path: Optional[str] = None
+    card_png_path: Optional[str] = None
     contact_id: Optional[str] = None
     audio_path: Optional[str] = None
     is_generic: bool = False
     tags: List[str] = field(default_factory=list)
     created_at: str = field(default_factory=now_iso)
+    rendered_at: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "Dedication":
+        # Compatibilidad con el formato antiguo (sin status): si tiene paths de render se considera "rendered"
+        if "status" in data:
+            status = data["status"]
+        else:
+            status = "rendered" if data.get("card_pdf_path") else "pending"
         return cls(
             id=data["id"],
             recipient_name=data["recipient_name"],
@@ -161,13 +168,19 @@ class Dedication:
             raw_input=data.get("raw_input", ""),
             corrected_text=data.get("corrected_text", ""),
             final_text=data["final_text"],
-            template_id=data["template_id"],
-            template_snapshot=data.get("template_snapshot", {}),
-            card_pdf_path=data["card_pdf_path"],
-            card_png_path=data["card_png_path"],
+            status=status,
+            template_id=data.get("template_id"),
+            template_snapshot=data.get("template_snapshot"),
+            card_pdf_path=data.get("card_pdf_path"),
+            card_png_path=data.get("card_png_path"),
             contact_id=data.get("contact_id"),
             audio_path=data.get("audio_path"),
             is_generic=bool(data.get("is_generic", False)),
             tags=list(data.get("tags", [])),
             created_at=data.get("created_at", now_iso()),
+            rendered_at=data.get("rendered_at"),
         )
+
+    @property
+    def is_pending(self) -> bool:
+        return self.status == "pending"

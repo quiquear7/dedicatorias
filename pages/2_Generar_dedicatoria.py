@@ -38,6 +38,7 @@ DEFAULT_STATE = {
     "selected_template_id": None,
     "is_generic": False,
     "saved_dedication_id": None,
+    "saved_as_pending": False,
     "loaded_duplicate_from": None,
 }
 
@@ -78,7 +79,7 @@ if duplicate_id and st.session_state.get("loaded_duplicate_from") != duplicate_i
 
 step = st.session_state["step"]
 
-steps_labels = ["1. Destinatario", "2. Texto", "3. Revisión", "4. Plantilla", "5. Exportar"]
+steps_labels = ["1. Destinatario", "2. Texto", "3. Revisión", "4. Plantilla / Guardar", "5. Exportar"]
 st.progress((step - 1) / 4, text=f"Paso {step} de 5 — {steps_labels[step - 1]}")
 
 
@@ -252,9 +253,31 @@ elif step == 3:
 elif step == 4:
     st.subheader("Plantilla")
     templates = templates_module.list_templates()
+
     if not templates:
-        st.error("No tienes plantillas. Crea una en la página «Plantillas» antes de continuar.")
-        _back_button(3)
+        st.warning("Todavía no tienes plantillas. Puedes guardar la dedicatoria como pendiente y generar el archivo de impresión más tarde, cuando subas una plantilla.")
+        cols = st.columns([1, 3])
+        with cols[0]:
+            _back_button(3)
+        with cols[1]:
+            if st.button("💾 Guardar como pendiente", type="primary"):
+                try:
+                    saved = history_module.save_pending(
+                        recipient_name=st.session_state["recipient_name"],
+                        recipient_group=st.session_state["recipient_group"],
+                        contact_id=st.session_state["contact_id"],
+                        input_mode=st.session_state["input_mode"],
+                        raw_input=st.session_state["raw_input"],
+                        corrected_text=st.session_state["corrected_text"],
+                        final_text=st.session_state["final_text"],
+                        audio_bytes=st.session_state.get("audio_bytes") if st.session_state["input_mode"] == "audio" else None,
+                        is_generic=st.session_state["is_generic"],
+                    )
+                    st.session_state["saved_dedication_id"] = saved.id
+                    st.session_state["saved_as_pending"] = True
+                    _go(5)
+                except Exception as e:  # noqa: BLE001
+                    st.error(f"Error guardando: {e}")
     else:
         labels = [f"{t.name} ({t.width_mm:.0f}×{t.height_mm:.0f} mm)" for t in templates]
         default_idx = 0
@@ -274,16 +297,46 @@ elif step == 4:
             except Exception as e:  # noqa: BLE001
                 st.error(f"Error en preview: {e}")
 
-        cols = st.columns([1, 3])
+        cols = st.columns([1, 1, 2])
         with cols[0]:
             _back_button(3)
         with cols[1]:
-            if st.button("Generar tarjeta →", type="primary"):
+            if st.button("💾 Guardar pendiente"):
+                try:
+                    saved = history_module.save_pending(
+                        recipient_name=st.session_state["recipient_name"],
+                        recipient_group=st.session_state["recipient_group"],
+                        contact_id=st.session_state["contact_id"],
+                        input_mode=st.session_state["input_mode"],
+                        raw_input=st.session_state["raw_input"],
+                        corrected_text=st.session_state["corrected_text"],
+                        final_text=st.session_state["final_text"],
+                        audio_bytes=st.session_state.get("audio_bytes") if st.session_state["input_mode"] == "audio" else None,
+                        is_generic=st.session_state["is_generic"],
+                    )
+                    st.session_state["saved_dedication_id"] = saved.id
+                    st.session_state["saved_as_pending"] = True
+                    _go(5)
+                except Exception as e:  # noqa: BLE001
+                    st.error(f"Error guardando: {e}")
+        with cols[2]:
+            if st.button("Generar tarjeta ahora →", type="primary"):
                 _go(5)
 
 # --- Step 5: Export ---
 elif step == 5:
-    st.subheader("Generar e imprimir")
+    if st.session_state.get("saved_as_pending"):
+        st.success("✅ Dedicatoria guardada como **pendiente**.")
+        st.markdown(
+            "Cuando tengas las plantillas listas, ve a la página **📜 Historial → pestaña Pendientes** "
+            "y pulsa **«Generar todas con plantilla»** para crear los archivos de impresión en lote, "
+            "o renderiza esta dedicatoria individualmente."
+        )
+        if st.button("Crear otra dedicatoria"):
+            _reset_flow()
+            st.rerun()
+        st.stop()
+
     template = templates_module.get_template(st.session_state["selected_template_id"])
     if not template:
         st.error("La plantilla seleccionada ya no existe.")
