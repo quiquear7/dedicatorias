@@ -9,7 +9,8 @@ from core import history as history_module
 from core import templates as templates_module
 from core.auth import logout_button, require_login
 from core.config import get_config
-from core.correction import correct_dedication
+from core.correction import correct_dedication, refine_text
+from core.diff import html_diff
 from core.models import Contact, Template
 from core.rendering import render_back_png, render_pdf, render_png, render_preview
 from core.transcription import transcribe
@@ -43,6 +44,7 @@ DEFAULT_STATE = {
     "_pdf_bytes": None,
     "_png_bytes": None,
     "_back_png_bytes": None,
+    "versions": [],  # lista de dicts {label, text}
 }
 
 for key, default in DEFAULT_STATE.items():
@@ -166,11 +168,17 @@ elif step == 2:
     with tab_audio:
         if not cfg.is_ai_ready:
             st.warning("No hay clave de IA configurada. Añade OPENAI_API_KEY o GOOGLE_API_KEY al .env.")
-        audio_value = st.audio_input("Graba tu dedicatoria")
+        st.info(
+            "💡 **Para que se grabe todo bien**: pulsa el botón rojo, **espera ~1 segundo en silencio antes de hablar**, "
+            "di la dedicatoria, y al terminar **espera otro segundo en silencio antes de pulsar Stop**. "
+            "Si la última palabra suena baja, prolongarla un poco también ayuda."
+        )
+        audio_value = st.audio_input("🎤 Graba tu dedicatoria")
         if audio_value is not None:
             audio_bytes = audio_value.getvalue()
             st.session_state["audio_bytes"] = audio_bytes
             st.session_state["audio_filename"] = audio_value.name or "audio.webm"
+            st.caption("👆 Escucha tu grabación arriba antes de transcribir. Si falta algo, vuelve a grabar.")
             if st.button("Transcribir y corregir", type="primary"):
                 provider = "Gemini" if cfg.ai_provider == "gemini" else "Whisper"
                 with st.spinner(f"Transcribiendo con {provider}..."):
@@ -189,6 +197,10 @@ elif step == 2:
                 st.session_state["raw_input"] = raw
                 st.session_state["corrected_text"] = corrected
                 st.session_state["final_text"] = corrected
+                st.session_state["versions"] = [
+                    {"label": "Transcripción cruda", "text": raw},
+                    {"label": "Corrección IA", "text": corrected},
+                ]
                 _go(3)
 
     with tab_text:
@@ -213,6 +225,10 @@ elif step == 2:
                 corrected = typed.strip()
             st.session_state["corrected_text"] = corrected
             st.session_state["final_text"] = corrected
+            versions = [{"label": "Texto introducido", "text": typed.strip()}]
+            if run_correction and corrected != typed.strip():
+                versions.append({"label": "Corrección IA", "text": corrected})
+            st.session_state["versions"] = versions
             _go(3)
 
     st.divider()
@@ -221,36 +237,126 @@ elif step == 2:
 # --- Step 3: Revisión ---
 elif step == 3:
     st.subheader("Revisión del texto")
-    if st.session_state["input_mode"] == "audio":
-        with st.expander("Transcripción cruda (de Whisper)"):
-            st.text(st.session_state["raw_input"])
-    else:
-        with st.expander("Texto introducido"):
-            st.text(st.session_state["raw_input"])
 
-    final_text = st.text_area(
-        "Texto final (editable)",
-        value=st.session_state["final_text"],
-        height=240,
-    )
-    st.session_state["final_text"] = final_text
+    versions = st.session_state.get("versions") or []
+    # Por compatibilidad con sesiones antiguas que no tengan versions:
+    if not versions:
+        versions = [{"label": "Texto", "text": st.session_state["final_text"]}]
+        st.session_state["versions"] = versions
 
-    cols = st.columns([1, 1, 2])
-    with cols[0]:
-        _back_button(2)
-    with cols[1]:
-        if st.button("🤖 Re-corregir") and cfg.is_ai_ready:
-            with st.spinner("Corrigiendo de nuevo..."):
-                try:
-                    corrected = correct_dedication(st.session_state["raw_input"])
-                    st.session_state["corrected_text"] = corrected
-                    st.session_state["final_text"] = corrected
-                    st.rerun()
-                except Exception as e:  # noqa: BLE001
-                    st.error(f"Error: {e}")
-    with cols[2]:
-        if st.button("Confirmar y elegir plantilla →", type="primary", disabled=not final_text.strip()):
-            _go(4)
+    tab_edit, tab_compare = st.tabs(["📝 Editar", f"🔍 Comparar versiones ({len(versions)})"])
+
+    with tab_edit:
+        # Texto crudo de referencia
+        if st.session_state["input_mode"] == "audio":
+            with st.expander("Transcripción cruda (sin tocar)"):
+                st.text(st.session_state["raw_input"])
+        else:
+            with st.expander("Texto original introducido"):
+                st.text(st.session_state["raw_input"])
+
+        final_text = st.text_area(
+            "Texto final (editable)",
+            value=st.session_state["final_text"],
+            height=240,
+            key="final_text_area",
+        )
+        # Si el usuario edita manualmente, lo guardamos como nueva versión sólo si cambia significativamente
+        if final_text != st.session_state["final_text"]:
+            st.session_state["final_text"] = final_text
+            if not versions or versions[-1]["text"] != final_text:
+                versions.append({"label": "Edición manual", "text": final_text})
+                st.session_state["versions"] = versions
+
+        st.divider()
+        st.markdown("**✨ Refinar con IA**")
+        st.caption(
+            "Dale instrucciones libres a la IA y aplicará los cambios sobre el texto actual: "
+            "ej. *«hazla más corta»*, *«añade un toque de humor»*, *«hazla más formal»*, *«tradúcela al catalán»*."
+        )
+        instr = st.text_input(
+            "Instrucciones",
+            placeholder="Ej. hazla más cariñosa y resume en 2 líneas",
+            key="refine_instruction",
+            label_visibility="collapsed",
+        )
+        rcols = st.columns([1, 1, 3])
+        with rcols[0]:
+            if st.button("✨ Refinar con IA", type="primary", disabled=not instr.strip() or not cfg.is_ai_ready):
+                with st.spinner("Refinando..."):
+                    try:
+                        new_text = refine_text(st.session_state["final_text"], instr)
+                        if new_text and new_text != st.session_state["final_text"]:
+                            label = f"Refinado: «{instr.strip()[:40]}{'…' if len(instr.strip())>40 else ''}»"
+                            versions.append({"label": label, "text": new_text})
+                            st.session_state["versions"] = versions
+                            st.session_state["final_text"] = new_text
+                            st.session_state["corrected_text"] = new_text
+                        st.rerun()
+                    except Exception as e:  # noqa: BLE001
+                        st.error(f"Error: {e}")
+        with rcols[1]:
+            if st.button("🤖 Re-corregir desde cero", help="Vuelve a aplicar la corrección base sobre el texto crudo original"):
+                with st.spinner("Corrigiendo..."):
+                    try:
+                        corrected = correct_dedication(st.session_state["raw_input"])
+                        if corrected != st.session_state["final_text"]:
+                            versions.append({"label": "Re-corrección", "text": corrected})
+                            st.session_state["versions"] = versions
+                        st.session_state["corrected_text"] = corrected
+                        st.session_state["final_text"] = corrected
+                        st.rerun()
+                    except Exception as e:  # noqa: BLE001
+                        st.error(f"Error: {e}")
+
+        st.divider()
+        cols = st.columns([1, 3])
+        with cols[0]:
+            _back_button(2)
+        with cols[1]:
+            if st.button(
+                "Confirmar y elegir plantilla →",
+                type="primary",
+                disabled=not st.session_state["final_text"].strip(),
+                use_container_width=True,
+            ):
+                _go(4)
+
+    with tab_compare:
+        if len(versions) < 2:
+            st.info(
+                "Aún no hay con qué comparar. Cuando refines la dedicatoria con instrucciones o "
+                "edites el texto, aparecerán aquí las distintas versiones."
+            )
+        else:
+            st.markdown("Selecciona dos versiones para comparar palabra por palabra:")
+            labels = [f"{i+1}. {v['label']}" for i, v in enumerate(versions)]
+            cols = st.columns(2)
+            with cols[0]:
+                left_idx = st.selectbox("Antes", options=range(len(versions)), format_func=lambda i: labels[i], index=0, key="diff_left")
+            with cols[1]:
+                right_idx = st.selectbox("Después", options=range(len(versions)), format_func=lambda i: labels[i], index=len(versions) - 1, key="diff_right")
+
+            left_text = versions[left_idx]["text"]
+            right_text = versions[right_idx]["text"]
+            left_html, right_html = html_diff(left_text, right_text)
+
+            dcols = st.columns(2)
+            with dcols[0]:
+                st.caption(f"📛 {versions[left_idx]['label']}")
+                st.markdown(left_html, unsafe_allow_html=True)
+            with dcols[1]:
+                st.caption(f"✅ {versions[right_idx]['label']}")
+                st.markdown(right_html, unsafe_allow_html=True)
+
+            st.markdown("Leyenda: <span style='background:#ffd6d6;color:#a40000;text-decoration:line-through'>quitado</span> · <span style='background:#d6ffd6;color:#0a6900'>añadido</span>", unsafe_allow_html=True)
+
+            st.divider()
+            if st.button(f"⬆️ Usar la versión «{versions[right_idx]['label']}» como texto final"):
+                st.session_state["final_text"] = right_text
+                st.session_state["corrected_text"] = right_text
+                st.toast("Texto final actualizado.")
+                st.rerun()
 
 # --- Step 4: Plantilla ---
 elif step == 4:
