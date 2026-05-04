@@ -256,6 +256,7 @@ with tab_list:
                         f"- **Fuente**: {tpl.text_style.font_family} {tpl.text_style.font_size_pt:.0f}pt "
                         f"({tpl.text_style.align})\n"
                         f"- **Zona nombre**: {'sí' if tpl.name_zone else 'no'}\n"
+                        f"- **Reverso**: {'sí' if tpl.has_back else 'no'}\n"
                         f"- **Creada**: {tpl.created_at}"
                     )
                 with cols[2]:
@@ -263,3 +264,76 @@ with tab_list:
                         templates_module.delete_template(tpl.id)
                         st.toast(f"Plantilla «{tpl.name}» eliminada.")
                         st.rerun()
+
+                st.divider()
+                st.markdown("**Editar:**")
+                edit_cols = st.columns([3, 1])
+                with edit_cols[0]:
+                    new_name = st.text_input(
+                        "Renombrar",
+                        value=tpl.name,
+                        key=f"rename_{tpl.id}",
+                        label_visibility="collapsed",
+                    )
+                with edit_cols[1]:
+                    if st.button("💾 Renombrar", key=f"rn_btn_{tpl.id}", use_container_width=True, disabled=new_name.strip() == tpl.name):
+                        try:
+                            templates_module.rename_template(tpl.id, new_name)
+                            st.toast("Renombrada.")
+                            st.rerun()
+                        except Exception as e:  # noqa: BLE001
+                            st.error(str(e))
+
+                st.markdown("**Reverso:**")
+                if tpl.has_back:
+                    bcols = st.columns([2, 1, 1])
+                    with bcols[0]:
+                        new_back = st.file_uploader(
+                            "Reemplazar reverso",
+                            type=["png", "jpg", "jpeg", "pdf"],
+                            key=f"replace_back_{tpl.id}",
+                            label_visibility="collapsed",
+                        )
+                    with bcols[1]:
+                        if st.button("💾 Reemplazar", key=f"rb_btn_{tpl.id}", use_container_width=True, disabled=new_back is None):
+                            try:
+                                templates_module.set_template_back(
+                                    tpl.id,
+                                    back_bytes=new_back.getvalue(),
+                                    back_extension=new_back.name.rsplit(".", 1)[-1].lower(),
+                                    back_type=_detect_source_type(new_back.name),
+                                )
+                                st.toast("Reverso reemplazado.")
+                                st.rerun()
+                            except Exception as e:  # noqa: BLE001
+                                st.error(str(e))
+                    with bcols[2]:
+                        if st.button("🗑️ Quitar reverso", key=f"clr_back_{tpl.id}", use_container_width=True):
+                            try:
+                                templates_module.clear_template_back(tpl.id)
+                                st.toast("Reverso eliminado.")
+                                st.rerun()
+                            except Exception as e:  # noqa: BLE001
+                                st.error(str(e))
+                else:
+                    bcols = st.columns([2, 1])
+                    with bcols[0]:
+                        new_back = st.file_uploader(
+                            "Añadir reverso (PNG/JPG/PDF)",
+                            type=["png", "jpg", "jpeg", "pdf"],
+                            key=f"add_back_{tpl.id}",
+                            label_visibility="collapsed",
+                        )
+                    with bcols[1]:
+                        if st.button("➕ Añadir reverso", key=f"add_back_btn_{tpl.id}", use_container_width=True, disabled=new_back is None):
+                            try:
+                                templates_module.set_template_back(
+                                    tpl.id,
+                                    back_bytes=new_back.getvalue(),
+                                    back_extension=new_back.name.rsplit(".", 1)[-1].lower(),
+                                    back_type=_detect_source_type(new_back.name),
+                                )
+                                st.toast("Reverso añadido.")
+                                st.rerun()
+                            except Exception as e:  # noqa: BLE001
+                                st.error(str(e))

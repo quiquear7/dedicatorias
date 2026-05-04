@@ -104,6 +104,59 @@ def get_back_source_bytes(template: Template) -> Optional[Tuple[bytes, str]]:
     return storage.get(template.back_source_path), template.back_source_type
 
 
+def rename_template(template_id: str, new_name: str) -> Template:
+    template = get_template(template_id)
+    if not template:
+        raise KeyError(f"Plantilla no encontrada: {template_id}")
+    if not new_name.strip():
+        raise ValueError("El nombre no puede estar vacío.")
+    template.name = new_name.strip()
+    return save_template(template)
+
+
+def set_template_back(
+    template_id: str,
+    back_bytes: bytes,
+    back_extension: str,
+    back_type: str,
+) -> Template:
+    """Añade o reemplaza la imagen de reverso de una plantilla."""
+    template = get_template(template_id)
+    if not template:
+        raise KeyError(f"Plantilla no encontrada: {template_id}")
+    storage = get_storage()
+
+    # Si ya había un reverso anterior, limpiarlo si va a cambiar de extensión.
+    if template.back_source_path:
+        try:
+            storage.delete(template.back_source_path)
+        except Exception:
+            pass
+
+    bext = back_extension.lstrip(".").lower() or ("pdf" if back_type == "pdf" else "png")
+    back_path = f"templates/{template_id}/back.{bext}"
+    storage.put(back_path, back_bytes)
+
+    template.back_source_path = back_path
+    template.back_source_type = back_type  # type: ignore[assignment]
+    return save_template(template)
+
+
+def clear_template_back(template_id: str) -> Template:
+    template = get_template(template_id)
+    if not template:
+        raise KeyError(f"Plantilla no encontrada: {template_id}")
+    if template.back_source_path:
+        storage = get_storage()
+        try:
+            storage.delete(template.back_source_path)
+        except Exception:
+            pass
+    template.back_source_path = None
+    template.back_source_type = None
+    return save_template(template)
+
+
 def delete_template(template_id: str) -> bool:
     storage = get_storage()
     index = _load_index()
