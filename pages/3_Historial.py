@@ -8,6 +8,7 @@ from core import history as history_module
 from core import templates as templates_module
 from core.auth import logout_button, require_login
 from core.config import get_config, get_storage
+from core.rendering import render_preview
 
 st.set_page_config(page_title="Historial", page_icon="📜", layout="wide")
 require_login()
@@ -54,6 +55,30 @@ with tab_pending:
             tlabels = [f"{t.name} ({t.width_mm:.0f}×{t.height_mm:.0f} mm)" for t in templates_all]
             tchoice = st.selectbox("Plantilla a usar para generar", options=tlabels, key="bulk_tpl")
             chosen_template = templates_all[tlabels.index(tchoice)]
+
+            # Vista previa con una de las pendientes (la primera por defecto, seleccionable)
+            with st.expander("👁️ Vista previa con esta plantilla", expanded=True):
+                preview_labels = [
+                    f"{p.recipient_name} — {p.final_text[:40]}{'…' if len(p.final_text) > 40 else ''}"
+                    for p in pending_list
+                ]
+                preview_idx = st.selectbox(
+                    "Dedicatoria a previsualizar",
+                    options=range(len(pending_list)),
+                    format_func=lambda i: preview_labels[i],
+                    key="bulk_preview_pick",
+                )
+                preview_target = pending_list[preview_idx]
+                with st.spinner("Renderizando preview..."):
+                    try:
+                        png_bytes = render_preview(
+                            chosen_template,
+                            preview_target.recipient_name,
+                            preview_target.final_text,
+                        )
+                        st.image(png_bytes, use_container_width=True, caption=f"Preview: {preview_target.recipient_name}")
+                    except Exception as e:  # noqa: BLE001
+                        st.warning(f"No se pudo generar preview: {e}")
 
             st.markdown("**Selecciona qué dedicatorias renderizar:**")
             select_all = st.checkbox("Seleccionar todas", value=True, key="bulk_all")
@@ -125,7 +150,7 @@ with tab_pending:
                         st.text(d.raw_input)
                 ind_template = None
                 if templates_all:
-                    cols = st.columns([3, 1])
+                    cols = st.columns([3, 1, 1])
                     with cols[0]:
                         ind_choice = st.selectbox(
                             "Plantilla",
@@ -134,7 +159,10 @@ with tab_pending:
                         )
                         ind_template = templates_all[tlabels.index(ind_choice)]
                     with cols[1]:
-                        if st.button("🚀 Generar", key=f"ind_gen_{d.id}", use_container_width=True):
+                        if st.button("👁️ Preview", key=f"ind_prev_{d.id}", use_container_width=True):
+                            st.session_state[f"_show_prev_{d.id}"] = True
+                    with cols[2]:
+                        if st.button("🚀 Generar", key=f"ind_gen_{d.id}", use_container_width=True, type="primary"):
                             with st.spinner("Generando..."):
                                 try:
                                     history_module.render_pending(d.id, ind_template)
@@ -142,6 +170,13 @@ with tab_pending:
                                     st.rerun()
                                 except Exception as e:  # noqa: BLE001
                                     st.error(f"Error: {e}")
+                    if st.session_state.get(f"_show_prev_{d.id}") and ind_template:
+                        with st.spinner("Renderizando preview..."):
+                            try:
+                                png = render_preview(ind_template, d.recipient_name, d.final_text)
+                                st.image(png, use_container_width=True)
+                            except Exception as e:  # noqa: BLE001
+                                st.warning(f"No se pudo generar preview: {e}")
                 if st.button("🗑️ Eliminar pendiente", key=f"ind_del_{d.id}"):
                     history_module.delete_dedication(d.id)
                     st.toast("Eliminada.")
