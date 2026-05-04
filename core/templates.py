@@ -60,12 +60,23 @@ def create_template(
     text_style,
     name_zone=None,
     name_style=None,
+    back_bytes: Optional[bytes] = None,
+    back_extension: Optional[str] = None,
+    back_type: Optional[str] = None,
 ) -> Template:
     if not name.strip():
         raise ValueError("El nombre de la plantilla es obligatorio.")
     template_id = str(uuid.uuid4())
     ext = source_extension.lstrip(".").lower() or ("pdf" if source_type == "pdf" else "png")
     source_path = f"templates/{template_id}/source.{ext}"
+
+    back_source_path: Optional[str] = None
+    back_source_type: Optional[str] = None
+    if back_bytes:
+        bext = (back_extension or "").lstrip(".").lower() or ("pdf" if back_type == "pdf" else "png")
+        back_source_path = f"templates/{template_id}/back.{bext}"
+        back_source_type = back_type or "image"
+
     template = Template(
         id=template_id,
         name=name.strip(),
@@ -77,8 +88,20 @@ def create_template(
         text_style=text_style,
         name_zone=name_zone,
         name_style=name_style,
+        back_source_path=back_source_path,
+        back_source_type=back_source_type,  # type: ignore[arg-type]
     )
-    return save_template(template, source_bytes=source_bytes)
+    saved = save_template(template, source_bytes=source_bytes)
+    if back_bytes and back_source_path:
+        get_storage().put(back_source_path, back_bytes)
+    return saved
+
+
+def get_back_source_bytes(template: Template) -> Optional[Tuple[bytes, str]]:
+    if not template.has_back or not template.back_source_path or not template.back_source_type:
+        return None
+    storage = get_storage()
+    return storage.get(template.back_source_path), template.back_source_type
 
 
 def delete_template(template_id: str) -> bool:

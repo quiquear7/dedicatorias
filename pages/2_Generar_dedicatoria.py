@@ -11,7 +11,7 @@ from core.auth import logout_button, require_login
 from core.config import get_config
 from core.correction import correct_dedication
 from core.models import Contact, Template
-from core.rendering import render_pdf, render_png, render_preview
+from core.rendering import render_back_png, render_pdf, render_png, render_preview
 from core.transcription import transcribe
 
 st.set_page_config(page_title="Generar dedicatoria", page_icon="✍️", layout="wide")
@@ -40,6 +40,9 @@ DEFAULT_STATE = {
     "saved_dedication_id": None,
     "saved_as_pending": False,
     "loaded_duplicate_from": None,
+    "_pdf_bytes": None,
+    "_png_bytes": None,
+    "_back_png_bytes": None,
 }
 
 for key, default in DEFAULT_STATE.items():
@@ -347,6 +350,7 @@ elif step == 5:
                 with st.spinner("Renderizando PDF + PNG a 300 dpi..."):
                     pdf_bytes, pdf_warn = render_pdf(template, st.session_state["recipient_name"], st.session_state["final_text"])
                     png_bytes, png_warn = render_png(template, st.session_state["recipient_name"], st.session_state["final_text"])
+                    back_png_bytes = render_back_png(template) if template.has_back else None
                 if pdf_warn.get("text_overflow") or png_warn.get("text_overflow"):
                     st.warning("⚠️ El texto no cabe completamente en la zona definida. Considera reducir el tamaño de fuente o ampliar la zona en la plantilla.")
                 if pdf_warn.get("name_overflow") or png_warn.get("name_overflow"):
@@ -363,25 +367,38 @@ elif step == 5:
                         final_text=st.session_state["final_text"],
                         pdf_bytes=pdf_bytes,
                         png_bytes=png_bytes,
+                        back_png_bytes=back_png_bytes,
                         audio_bytes=st.session_state.get("audio_bytes") if st.session_state["input_mode"] == "audio" else None,
                         is_generic=st.session_state["is_generic"],
                     )
                 st.session_state["saved_dedication_id"] = saved.id
                 st.session_state["_pdf_bytes"] = pdf_bytes
                 st.session_state["_png_bytes"] = png_bytes
+                st.session_state["_back_png_bytes"] = back_png_bytes
             except Exception as e:  # noqa: BLE001
                 st.error(f"Error generando: {e}")
                 _back_button(4)
                 st.stop()
 
         st.success("Dedicatoria generada y guardada en el historial.")
-        st.image(st.session_state["_png_bytes"], use_container_width=True, caption="Vista final")
+
+        # Vista de las dos caras si hay reverso, o sólo el frente.
+        if st.session_state.get("_back_png_bytes"):
+            tab_front, tab_back = st.tabs(["📄 Frente (con texto)", "🔄 Reverso"])
+            with tab_front:
+                st.image(st.session_state["_png_bytes"], use_container_width=True, caption="Frente")
+            with tab_back:
+                st.image(st.session_state["_back_png_bytes"], use_container_width=True, caption="Reverso")
+        else:
+            st.image(st.session_state["_png_bytes"], use_container_width=True, caption="Vista final")
 
         slug = st.session_state["recipient_name"].replace(" ", "_") or "tarjeta"
-        cols = st.columns(2)
+        n_cols = 3 if st.session_state.get("_back_png_bytes") else 2
+        cols = st.columns(n_cols)
         with cols[0]:
+            label = "⬇️ PDF (frente + reverso)" if st.session_state.get("_back_png_bytes") else "⬇️ Descargar PDF (imprenta)"
             st.download_button(
-                "⬇️ Descargar PDF (imprenta)",
+                label,
                 data=st.session_state["_pdf_bytes"],
                 file_name=f"dedicatoria_{slug}.pdf",
                 mime="application/pdf",
@@ -389,12 +406,21 @@ elif step == 5:
             )
         with cols[1]:
             st.download_button(
-                "⬇️ Descargar PNG (300 dpi)",
+                "⬇️ PNG frente (300 dpi)",
                 data=st.session_state["_png_bytes"],
-                file_name=f"dedicatoria_{slug}.png",
+                file_name=f"dedicatoria_{slug}_frente.png",
                 mime="image/png",
                 use_container_width=True,
             )
+        if st.session_state.get("_back_png_bytes"):
+            with cols[2]:
+                st.download_button(
+                    "⬇️ PNG reverso (300 dpi)",
+                    data=st.session_state["_back_png_bytes"],
+                    file_name=f"dedicatoria_{slug}_reverso.png",
+                    mime="image/png",
+                    use_container_width=True,
+                )
 
         is_generic = st.checkbox(
             "Marcar esta dedicatoria como genérica (para reutilizar con otros destinatarios)",

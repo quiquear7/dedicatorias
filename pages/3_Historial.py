@@ -244,10 +244,22 @@ with tab_rendered:
             with st.expander(f"{d.created_at[:10]} · {title}"):
                 cols = st.columns([3, 4])
                 with cols[0]:
-                    if d.card_png_path:
+                    if d.card_back_png_path:
+                        ftab, btab = st.tabs(["📄 Frente", "🔄 Reverso"])
+                        with ftab:
+                            if d.card_png_path:
+                                try:
+                                    st.image(storage.get(d.card_png_path), use_container_width=True)
+                                except Exception as e:  # noqa: BLE001
+                                    st.warning(f"No se pudo cargar el frente: {e}")
+                        with btab:
+                            try:
+                                st.image(storage.get(d.card_back_png_path), use_container_width=True)
+                            except Exception as e:  # noqa: BLE001
+                                st.warning(f"No se pudo cargar el reverso: {e}")
+                    elif d.card_png_path:
                         try:
-                            png_data = storage.get(d.card_png_path)
-                            st.image(png_data, use_container_width=True)
+                            st.image(storage.get(d.card_png_path), use_container_width=True)
                         except Exception as e:  # noqa: BLE001
                             st.warning(f"No se pudo cargar la imagen: {e}")
                 with cols[1]:
@@ -258,9 +270,10 @@ with tab_rendered:
                             st.text(d.raw_input)
                     st.caption(
                         f"Modo: {d.input_mode} · Creada: {d.created_at} · ID: {d.id[:8]}"
+                        + (" · 🔄 con reverso" if d.card_back_png_path else "")
                     )
 
-                    actions = st.columns(4)
+                    actions = st.columns(5 if d.card_back_png_path else 4)
                     with actions[0]:
                         if d.card_pdf_path:
                             try:
@@ -280,20 +293,36 @@ with tab_rendered:
                             try:
                                 png_bytes = storage.get(d.card_png_path)
                                 st.download_button(
-                                    "⬇️ PNG",
+                                    "⬇️ PNG frente" if d.card_back_png_path else "⬇️ PNG",
                                     data=png_bytes,
-                                    file_name=f"dedicatoria_{d.recipient_name.replace(' ', '_')}.png",
+                                    file_name=f"dedicatoria_{d.recipient_name.replace(' ', '_')}_frente.png" if d.card_back_png_path else f"dedicatoria_{d.recipient_name.replace(' ', '_')}.png",
                                     mime="image/png",
                                     key=f"png_{d.id}",
                                     use_container_width=True,
                                 )
                             except Exception:
                                 st.write("PNG no disponible")
-                    with actions[2]:
+                    if d.card_back_png_path:
+                        with actions[2]:
+                            try:
+                                back_bytes = storage.get(d.card_back_png_path)
+                                st.download_button(
+                                    "⬇️ PNG reverso",
+                                    data=back_bytes,
+                                    file_name=f"dedicatoria_{d.recipient_name.replace(' ', '_')}_reverso.png",
+                                    mime="image/png",
+                                    key=f"backpng_{d.id}",
+                                    use_container_width=True,
+                                )
+                            except Exception:
+                                st.write("Reverso no disponible")
+                    dup_idx = 3 if d.card_back_png_path else 2
+                    del_idx = dup_idx + 1
+                    with actions[dup_idx]:
                         if st.button("🔁 Duplicar", key=f"dup_{d.id}", help="Reutilizar texto y plantilla con otro destinatario"):
                             st.query_params["duplicate"] = d.id
                             st.switch_page("pages/2_Generar_dedicatoria.py")
-                    with actions[3]:
+                    with actions[del_idx]:
                         if st.button("🗑️ Eliminar", key=f"del_{d.id}"):
                             history_module.delete_dedication(d.id)
                             st.toast("Eliminada.")

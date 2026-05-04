@@ -90,9 +90,15 @@ with tab_create:
     with left:
         name = st.text_input("Nombre de la plantilla", value=st.session_state.get("tpl_name", ""), key="tpl_name", placeholder="Ej. Tarjeta navideña 10x15")
         uploaded = st.file_uploader(
-            "Diseño (PNG, JPG o PDF)",
+            "Diseño del FRENTE (PNG, JPG o PDF)",
             type=["png", "jpg", "jpeg", "pdf"],
             key="tpl_upload",
+        )
+        uploaded_back = st.file_uploader(
+            "Diseño del REVERSO (opcional, PNG, JPG o PDF)",
+            type=["png", "jpg", "jpeg", "pdf"],
+            key="tpl_upload_back",
+            help="Imagen que va por la parte de atrás de la tarjeta. Misma medida que el frente.",
         )
         cols_dim = st.columns(2)
         with cols_dim[0]:
@@ -178,10 +184,35 @@ with tab_create:
             except Exception as e:  # noqa: BLE001
                 st.error(f"No se pudo generar el preview: {e}")
 
+    # Preview del reverso (si lo subió)
+    if uploaded_back is not None:
+        with right:
+            st.markdown("**Reverso (preview)**")
+            try:
+                back_bytes = uploaded_back.getvalue()
+                back_type = _detect_source_type(uploaded_back.name)
+                from core.rendering import _bytes_to_image, mm_to_px
+
+                tw = mm_to_px(width_mm, PREVIEW_DPI)
+                th = mm_to_px(height_mm, PREVIEW_DPI)
+                back_img = _bytes_to_image(back_bytes, back_type, tw, th, PREVIEW_DPI)
+                bb = io.BytesIO()
+                back_img.convert("RGB").save(bb, format="PNG")
+                st.image(bb.getvalue(), use_container_width=True)
+            except Exception as e:  # noqa: BLE001
+                st.warning(f"No se pudo previsualizar el reverso: {e}")
+
     st.divider()
     if st.button("💾 Guardar plantilla", type="primary", disabled=uploaded is None or not name.strip()):
         try:
             ext = uploaded.name.rsplit(".", 1)[-1].lower()
+            back_kwargs = {}
+            if uploaded_back is not None:
+                back_kwargs = {
+                    "back_bytes": uploaded_back.getvalue(),
+                    "back_extension": uploaded_back.name.rsplit(".", 1)[-1].lower(),
+                    "back_type": _detect_source_type(uploaded_back.name),
+                }
             templates_module.create_template(
                 name=name.strip(),
                 source_bytes=uploaded.getvalue(),
@@ -193,9 +224,10 @@ with tab_create:
                 text_style=text_style,
                 name_zone=name_zone,
                 name_style=name_style,
+                **back_kwargs,
             )
             st.success(f"Plantilla «{name}» guardada.")
-            for k in ["tpl_name", "tpl_upload"]:
+            for k in ["tpl_name", "tpl_upload", "tpl_upload_back"]:
                 st.session_state.pop(k, None)
             st.rerun()
         except Exception as e:  # noqa: BLE001
@@ -207,7 +239,8 @@ with tab_list:
         st.info("Todavía no hay plantillas.")
     else:
         for tpl in templates:
-            with st.expander(f"🎴 {tpl.name} · {tpl.width_mm:.0f}×{tpl.height_mm:.0f} mm · {tpl.source_type.upper()}"):
+            back_badge = " · 🔄 con reverso" if tpl.has_back else ""
+            with st.expander(f"🎴 {tpl.name} · {tpl.width_mm:.0f}×{tpl.height_mm:.0f} mm · {tpl.source_type.upper()}{back_badge}"):
                 cols = st.columns([2, 3, 1])
                 with cols[0]:
                     try:

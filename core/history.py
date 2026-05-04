@@ -51,6 +51,7 @@ def save_generated(
     final_text: str,
     pdf_bytes: bytes,
     png_bytes: bytes,
+    back_png_bytes: Optional[bytes] = None,
     audio_bytes: Optional[bytes] = None,
     audio_extension: str = "webm",
     is_generic: bool = False,
@@ -61,10 +62,14 @@ def save_generated(
     base = f"history/{dedication_id}"
     pdf_path = f"{base}/card.pdf"
     png_path = f"{base}/card.png"
+    back_png_path: Optional[str] = None
     audio_path: Optional[str] = None
 
     storage.put(pdf_path, pdf_bytes)
     storage.put(png_path, png_bytes)
+    if back_png_bytes:
+        back_png_path = f"{base}/card_back.png"
+        storage.put(back_png_path, back_png_bytes)
     if audio_bytes:
         audio_path = f"{base}/audio.{audio_extension.lstrip('.').lower() or 'webm'}"
         storage.put(audio_path, audio_bytes)
@@ -83,6 +88,7 @@ def save_generated(
         template_snapshot=template.to_dict(),
         card_pdf_path=pdf_path,
         card_png_path=png_path,
+        card_back_png_path=back_png_path,
         contact_id=contact_id,
         audio_path=audio_path,
         is_generic=is_generic,
@@ -144,7 +150,7 @@ def save_pending(
 
 def render_pending(dedication_id: str, template: Template) -> Dedication:
     """Renderiza una dedicatoria pendiente con la plantilla indicada y la marca como 'rendered'."""
-    from core.rendering import render_pdf, render_png
+    from core.rendering import render_back_png, render_pdf, render_png
 
     dedication = get_dedication(dedication_id)
     if dedication is None:
@@ -159,18 +165,30 @@ def render_pending(dedication_id: str, template: Template) -> Dedication:
     base = f"history/{dedication_id}"
     pdf_path = f"{base}/card.pdf"
     png_path = f"{base}/card.png"
+    back_png_path: Optional[str] = None
 
     pdf_bytes, _ = render_pdf(template, dedication.recipient_name, dedication.final_text)
     png_bytes, _ = render_png(template, dedication.recipient_name, dedication.final_text)
+    back_bytes = render_back_png(template) if template.has_back else None
 
     storage.put(pdf_path, pdf_bytes)
     storage.put(png_path, png_bytes)
+    if back_bytes:
+        back_png_path = f"{base}/card_back.png"
+        storage.put(back_png_path, back_bytes)
+    elif dedication.card_back_png_path:
+        # Limpiar reverso anterior si la nueva plantilla no tiene reverso.
+        try:
+            storage.delete(dedication.card_back_png_path)
+        except Exception:
+            pass
 
     dedication.status = "rendered"
     dedication.template_id = template.id
     dedication.template_snapshot = template.to_dict()
     dedication.card_pdf_path = pdf_path
     dedication.card_png_path = png_path
+    dedication.card_back_png_path = back_png_path
     dedication.rendered_at = now_iso()
 
     index = _load_index()

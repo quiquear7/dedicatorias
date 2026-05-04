@@ -67,7 +67,13 @@ class Template:
     text_style: TextStyle
     name_zone: Optional[Zone] = None
     name_style: Optional[TextStyle] = None
+    back_source_path: Optional[str] = None
+    back_source_type: Optional[Literal["image", "pdf"]] = None
     created_at: str = field(default_factory=now_iso)
+
+    @property
+    def has_back(self) -> bool:
+        return bool(self.back_source_path)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -81,6 +87,8 @@ class Template:
             "text_style": self.text_style.to_dict(),
             "name_zone": self.name_zone.to_dict() if self.name_zone else None,
             "name_style": self.name_style.to_dict() if self.name_style else None,
+            "back_source_path": self.back_source_path,
+            "back_source_type": self.back_source_type,
             "created_at": self.created_at,
         }
 
@@ -97,6 +105,8 @@ class Template:
             text_style=TextStyle.from_dict(data["text_style"]),
             name_zone=Zone.from_dict(data["name_zone"]) if data.get("name_zone") else None,
             name_style=TextStyle.from_dict(data["name_style"]) if data.get("name_style") else None,
+            back_source_path=data.get("back_source_path"),
+            back_source_type=data.get("back_source_type"),
             created_at=data.get("created_at", now_iso()),
         )
 
@@ -143,6 +153,7 @@ class Dedication:
     template_snapshot: Optional[Dict[str, Any]] = None
     card_pdf_path: Optional[str] = None
     card_png_path: Optional[str] = None
+    card_back_png_path: Optional[str] = None
     contact_id: Optional[str] = None
     audio_path: Optional[str] = None
     is_generic: bool = False
@@ -173,6 +184,7 @@ class Dedication:
             template_snapshot=data.get("template_snapshot"),
             card_pdf_path=data.get("card_pdf_path"),
             card_png_path=data.get("card_png_path"),
+            card_back_png_path=data.get("card_back_png_path"),
             contact_id=data.get("contact_id"),
             audio_path=data.get("audio_path"),
             is_generic=bool(data.get("is_generic", False)),
