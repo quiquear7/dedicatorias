@@ -7,6 +7,7 @@ import streamlit as st
 from core import contacts as contacts_module
 from core import history as history_module
 from core import templates as templates_module
+from core.audio_recorder import audio_recorder
 from core.auth import logout_button, require_login
 from core.config import get_config
 from core.correction import correct_dedication, refine_text
@@ -45,6 +46,8 @@ DEFAULT_STATE = {
     "_png_bytes": None,
     "_back_png_bytes": None,
     "versions": [],  # lista de dicts {label, text}
+    "final_text_rev": 0,  # se incrementa para forzar refresco del text_area cuando la IA reescribe
+    "audio_widget_rev": 0,  # se incrementa para resetear el widget de grabación
 }
 
 for key, default in DEFAULT_STATE.items():
@@ -169,39 +172,56 @@ elif step == 2:
         if not cfg.is_ai_ready:
             st.warning("No hay clave de IA configurada. Añade OPENAI_API_KEY o GOOGLE_API_KEY al .env.")
         st.info(
-            "💡 **Para que se grabe todo bien**: pulsa el botón rojo, **espera ~1 segundo en silencio antes de hablar**, "
-            "di la dedicatoria, y al terminar **espera otro segundo en silencio antes de pulsar Stop**. "
-            "Si la última palabra suena baja, prolongarla un poco también ayuda."
+            "💡 **Para que se grabe todo bien**: pulsa **Grabar**, espera ~1s en silencio antes de hablar, "
+            "di la dedicatoria, y al terminar espera otro segundo antes de pulsar **Detener**. "
+            "Puedes **pausar** y reanudar las veces que quieras, o pulsar **🔄 Volver a grabar** para empezar de nuevo."
         )
-        audio_value = st.audio_input("🎤 Graba tu dedicatoria")
-        if audio_value is not None:
-            audio_bytes = audio_value.getvalue()
-            st.session_state["audio_bytes"] = audio_bytes
-            st.session_state["audio_filename"] = audio_value.name or "audio.webm"
-            st.caption("👆 Escucha tu grabación arriba antes de transcribir. Si falta algo, vuelve a grabar.")
-            if st.button("Transcribir y corregir", type="primary"):
-                provider = "Gemini" if cfg.ai_provider == "gemini" else "Whisper"
-                with st.spinner(f"Transcribiendo con {provider}..."):
-                    try:
-                        raw = transcribe(audio_bytes, filename=st.session_state["audio_filename"])
-                    except Exception as e:  # noqa: BLE001
-                        st.error(f"Error transcribiendo: {e}")
-                        st.stop()
-                with st.spinner("Corrigiendo con IA..."):
-                    try:
-                        corrected = correct_dedication(raw)
-                    except Exception as e:  # noqa: BLE001
-                        st.warning(f"No se pudo corregir, uso el texto crudo: {e}")
-                        corrected = raw
-                st.session_state["input_mode"] = "audio"
-                st.session_state["raw_input"] = raw
-                st.session_state["corrected_text"] = corrected
-                st.session_state["final_text"] = corrected
-                st.session_state["versions"] = [
-                    {"label": "Transcripción cruda", "text": raw},
-                    {"label": "Corrección IA", "text": corrected},
-                ]
-                _go(3)
+
+        rec = audio_recorder(key=f"recorder_{st.session_state['audio_widget_rev']}")
+        if rec is not None:
+            st.session_state["audio_bytes"] = rec.audio_bytes
+            st.session_state["audio_filename"] = rec.filename
+            st.caption(
+                f"👆 Escucha tu grabación arriba antes de transcribir "
+                f"({rec.size // 1024} KB · {rec.duration_ms // 1000}s). "
+                "Si falta algo, pulsa **🔄 Volver a grabar**."
+            )
+            cols_a = st.columns([1, 1])
+            with cols_a[0]:
+                if st.button("Transcribir y corregir", type="primary"):
+                    provider = "Gemini" if cfg.ai_provider == "gemini" else "Whisper"
+                    with st.spinner(f"Transcribiendo con {provider}..."):
+                        try:
+                            raw = transcribe(rec.audio_bytes, filename=rec.filename)
+                        except Exception as e:  # noqa: BLE001
+                            st.error(f"Error transcribiendo: {e}")
+                            st.stop()
+                    with st.spinner("Corrigiendo con IA..."):
+                        try:
+                            corrected = correct_dedication(raw)
+                        except Exception as e:  # noqa: BLE001
+                            st.warning(f"No se pudo corregir, uso el texto crudo: {e}")
+                            corrected = raw
+                    st.session_state["input_mode"] = "audio"
+                    st.session_state["raw_input"] = raw
+                    st.session_state["corrected_text"] = corrected
+                    st.session_state["final_text"] = corrected
+                    st.session_state["final_text_rev"] += 1
+                    st.session_state["versions"] = [
+                        {"label": "Transcripción cruda", "text": raw},
+                        {"label": "Corrección IA", "text": corrected},
+                    ]
+                    _go(3)
+            with cols_a[1]:
+                if st.button("🔄 Descartar y volver a grabar", help="Limpia la grabación actual y resetea el grabador"):
+                    st.session_state["audio_bytes"] = None
+                    st.session_state["audio_filename"] = None
+                    st.session_state["audio_widget_rev"] += 1
+                    st.rerun()
+        else:
+            # No hay grabación todavía: limpia restos por si veníamos de un descarte
+            st.session_state["audio_bytes"] = None
+            st.session_state["audio_filename"] = None
 
     with tab_text:
         typed = st.text_area(
@@ -259,7 +279,7 @@ elif step == 3:
             "Texto final (editable)",
             value=st.session_state["final_text"],
             height=240,
-            key="final_text_area",
+            key=f"final_text_area_{st.session_state['final_text_rev']}",
         )
         # Si el usuario edita manualmente, lo guardamos como nueva versión sólo si cambia significativamente
         if final_text != st.session_state["final_text"]:
@@ -292,6 +312,9 @@ elif step == 3:
                             st.session_state["versions"] = versions
                             st.session_state["final_text"] = new_text
                             st.session_state["corrected_text"] = new_text
+                            st.session_state["final_text_rev"] += 1
+                        else:
+                            st.info("La IA devolvió el mismo texto. Prueba con otras instrucciones.")
                         st.rerun()
                     except Exception as e:  # noqa: BLE001
                         st.error(f"Error: {e}")
@@ -303,6 +326,7 @@ elif step == 3:
                         if corrected != st.session_state["final_text"]:
                             versions.append({"label": "Re-corrección", "text": corrected})
                             st.session_state["versions"] = versions
+                            st.session_state["final_text_rev"] += 1
                         st.session_state["corrected_text"] = corrected
                         st.session_state["final_text"] = corrected
                         st.rerun()
@@ -355,6 +379,7 @@ elif step == 3:
             if st.button(f"⬆️ Usar la versión «{versions[right_idx]['label']}» como texto final"):
                 st.session_state["final_text"] = right_text
                 st.session_state["corrected_text"] = right_text
+                st.session_state["final_text_rev"] += 1
                 st.toast("Texto final actualizado.")
                 st.rerun()
 

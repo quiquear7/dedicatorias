@@ -1,0 +1,400 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <title>Audio recorder</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+    }
+    * { box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      margin: 0;
+      padding: 12px;
+      background: transparent;
+      color: inherit;
+    }
+    .wrap {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .status {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 14px;
+      min-height: 22px;
+    }
+    .dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: #aaa;
+      flex-shrink: 0;
+    }
+    .dot.rec {
+      background: #e23b3b;
+      animation: pulse 1s ease-in-out infinite;
+    }
+    .dot.pause {
+      background: #f0a020;
+    }
+    .dot.stop {
+      background: #4caf50;
+    }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.55; transform: scale(0.85); }
+    }
+    .timer {
+      font-variant-numeric: tabular-nums;
+      font-size: 14px;
+      opacity: 0.85;
+    }
+    .controls {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+    button {
+      font: inherit;
+      font-size: 14px;
+      padding: 8px 14px;
+      border-radius: 8px;
+      border: 1px solid rgba(120, 120, 120, 0.35);
+      background: rgba(255, 255, 255, 0.04);
+      color: inherit;
+      cursor: pointer;
+      transition: background 0.15s, border 0.15s, opacity 0.15s;
+    }
+    button:hover:not(:disabled) {
+      background: rgba(120, 120, 120, 0.15);
+    }
+    button:disabled {
+      opacity: 0.4;
+      cursor: not-allowed;
+    }
+    button.primary {
+      background: #ff4b4b;
+      color: #fff;
+      border-color: #ff4b4b;
+    }
+    button.primary:hover:not(:disabled) {
+      background: #e23b3b;
+    }
+    button.warn {
+      border-color: #f0a020;
+      color: #f0a020;
+    }
+    button.danger {
+      border-color: #c44;
+      color: #c44;
+    }
+    audio {
+      width: 100%;
+    }
+    .err {
+      color: #e23b3b;
+      font-size: 13px;
+    }
+    .hint {
+      font-size: 12px;
+      opacity: 0.7;
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap" id="wrap">
+    <div class="status">
+      <span class="dot" id="dot"></span>
+      <span id="label">Listo para grabar</span>
+      <span class="timer" id="timer">00:00</span>
+    </div>
+    <div class="controls">
+      <button class="primary" id="btn-start">🎙️ Grabar</button>
+      <button id="btn-pause" disabled>⏸️ Pausa</button>
+      <button id="btn-resume" disabled>▶️ Reanudar</button>
+      <button id="btn-stop" disabled>⏹️ Detener</button>
+      <button class="danger" id="btn-reset" disabled>🔄 Volver a grabar</button>
+    </div>
+    <audio id="player" controls hidden></audio>
+    <div class="hint" id="hint">
+      Pulsa <b>Grabar</b>, espera ~1s en silencio antes de hablar y al terminar haz lo mismo antes de pulsar <b>Detener</b>.
+      Puedes <b>pausar</b> y reanudar las veces que quieras.
+    </div>
+    <div class="err" id="err" hidden></div>
+  </div>
+
+  <script>
+    // ----- Streamlit component bridge -----
+    function sendMessageToStreamlit(type, data) {
+      const message = Object.assign({ isStreamlitMessage: true, type: type }, data || {});
+      window.parent.postMessage(message, "*");
+    }
+    function setComponentReady() {
+      sendMessageToStreamlit("streamlit:componentReady", { apiVersion: 1 });
+    }
+    function setFrameHeight(height) {
+      sendMessageToStreamlit("streamlit:setFrameHeight", { height: height });
+    }
+    function setComponentValue(value) {
+      sendMessageToStreamlit("streamlit:setComponentValue", { value: value, dataType: "json" });
+    }
+    function autoHeight() {
+      const h = document.getElementById("wrap").getBoundingClientRect().height + 24;
+      setFrameHeight(Math.ceil(h));
+    }
+
+    // ----- Recorder state -----
+    const dot = document.getElementById("dot");
+    const label = document.getElementById("label");
+    const timer = document.getElementById("timer");
+    const btnStart = document.getElementById("btn-start");
+    const btnPause = document.getElementById("btn-pause");
+    const btnResume = document.getElementById("btn-resume");
+    const btnStop = document.getElementById("btn-stop");
+    const btnReset = document.getElementById("btn-reset");
+    const player = document.getElementById("player");
+    const errBox = document.getElementById("err");
+
+    let mediaRecorder = null;
+    let mediaStream = null;
+    let chunks = [];
+    let mimeType = "";
+    let timerInterval = null;
+    let elapsedMs = 0;
+    let lastResumeAt = 0;
+    let state = "idle"; // idle | recording | paused | stopped
+    let currentRevision = 0; // bumps each new recording to invalidate stale values
+
+    function showError(msg) {
+      errBox.textContent = msg;
+      errBox.hidden = !msg;
+      autoHeight();
+    }
+
+    function fmt(ms) {
+      const total = Math.floor(ms / 1000);
+      const m = String(Math.floor(total / 60)).padStart(2, "0");
+      const s = String(total % 60).padStart(2, "0");
+      return `${m}:${s}`;
+    }
+
+    function tick() {
+      let cur = elapsedMs;
+      if (state === "recording") cur += Date.now() - lastResumeAt;
+      timer.textContent = fmt(cur);
+    }
+
+    function startTimer() {
+      stopTimer();
+      timerInterval = setInterval(tick, 200);
+    }
+    function stopTimer() {
+      if (timerInterval) clearInterval(timerInterval);
+      timerInterval = null;
+    }
+
+    function setState(next) {
+      state = next;
+      dot.className = "dot";
+      if (next === "recording") dot.classList.add("rec");
+      else if (next === "paused") dot.classList.add("pause");
+      else if (next === "stopped") dot.classList.add("stop");
+
+      label.textContent = ({
+        idle: "Listo para grabar",
+        recording: "Grabando...",
+        paused: "Pausado",
+        stopped: "Grabación lista",
+      })[next] || "";
+
+      btnStart.disabled = next === "recording" || next === "paused" || next === "stopped";
+      btnPause.disabled = next !== "recording";
+      btnResume.disabled = next !== "paused";
+      btnStop.disabled = next !== "recording" && next !== "paused";
+      btnReset.disabled = next !== "stopped" && next !== "paused" && next !== "recording";
+      autoHeight();
+    }
+
+    function pickMime() {
+      const candidates = [
+        "audio/webm;codecs=opus",
+        "audio/webm",
+        "audio/ogg;codecs=opus",
+        "audio/mp4",
+      ];
+      for (const c of candidates) {
+        if (window.MediaRecorder && MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(c)) {
+          return c;
+        }
+      }
+      return "";
+    }
+
+    function extFromMime(m) {
+      if (!m) return "webm";
+      if (m.includes("webm")) return "webm";
+      if (m.includes("ogg")) return "ogg";
+      if (m.includes("mp4")) return "m4a";
+      if (m.includes("wav")) return "wav";
+      return "webm";
+    }
+
+    function blobToBase64(blob) {
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onloadend = () => {
+          const dataUrl = reader.result || "";
+          const idx = String(dataUrl).indexOf(",");
+          resolve(idx >= 0 ? String(dataUrl).substring(idx + 1) : "");
+        };
+        reader.onerror = () => reject(reader.error);
+        reader.readAsDataURL(blob);
+      });
+    }
+
+    async function start() {
+      showError("");
+      if (!navigator.mediaDevices || !window.MediaRecorder) {
+        showError("Tu navegador no soporta grabación de audio (MediaRecorder).");
+        return;
+      }
+      try {
+        mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      } catch (e) {
+        showError("No se pudo acceder al micrófono: " + (e && e.message ? e.message : e));
+        return;
+      }
+      mimeType = pickMime();
+      const opts = mimeType ? { mimeType: mimeType } : undefined;
+      try {
+        mediaRecorder = new MediaRecorder(mediaStream, opts);
+      } catch (e) {
+        showError("No se pudo iniciar la grabadora: " + (e && e.message ? e.message : e));
+        return;
+      }
+      chunks = [];
+      elapsedMs = 0;
+      lastResumeAt = Date.now();
+      mediaRecorder.ondataavailable = (ev) => {
+        if (ev.data && ev.data.size > 0) chunks.push(ev.data);
+      };
+      mediaRecorder.onstop = async () => {
+        stopTimer();
+        if (mediaStream) {
+          mediaStream.getTracks().forEach((t) => t.stop());
+          mediaStream = null;
+        }
+        const finalMime = mimeType || (mediaRecorder && mediaRecorder.mimeType) || "audio/webm";
+        const blob = new Blob(chunks, { type: finalMime });
+        const url = URL.createObjectURL(blob);
+        player.src = url;
+        player.hidden = false;
+        setState("stopped");
+        currentRevision += 1;
+        try {
+          const b64 = await blobToBase64(blob);
+          setComponentValue({
+            audio_b64: b64,
+            mime: finalMime,
+            ext: extFromMime(finalMime),
+            size: blob.size,
+            duration_ms: elapsedMs,
+            rev: currentRevision,
+          });
+        } catch (e) {
+          showError("Error procesando audio: " + (e && e.message ? e.message : e));
+        }
+      };
+      mediaRecorder.start(250);
+      setState("recording");
+      startTimer();
+    }
+
+    function pause() {
+      if (!mediaRecorder || mediaRecorder.state !== "recording") return;
+      try {
+        mediaRecorder.pause();
+        elapsedMs += Date.now() - lastResumeAt;
+        setState("paused");
+      } catch (e) {
+        showError("No se pudo pausar: " + (e && e.message ? e.message : e));
+      }
+    }
+
+    function resume() {
+      if (!mediaRecorder || mediaRecorder.state !== "paused") return;
+      try {
+        mediaRecorder.resume();
+        lastResumeAt = Date.now();
+        setState("recording");
+      } catch (e) {
+        showError("No se pudo reanudar: " + (e && e.message ? e.message : e));
+      }
+    }
+
+    function stop() {
+      if (!mediaRecorder) return;
+      if (mediaRecorder.state === "recording") {
+        elapsedMs += Date.now() - lastResumeAt;
+      }
+      try {
+        mediaRecorder.stop();
+      } catch (e) {
+        showError("No se pudo detener: " + (e && e.message ? e.message : e));
+      }
+    }
+
+    function reset() {
+      try {
+        if (mediaRecorder && (mediaRecorder.state === "recording" || mediaRecorder.state === "paused")) {
+          mediaRecorder.stop();
+        }
+      } catch (_) { /* noop */ }
+      if (mediaStream) {
+        try { mediaStream.getTracks().forEach((t) => t.stop()); } catch (_) { /* noop */ }
+        mediaStream = null;
+      }
+      stopTimer();
+      chunks = [];
+      elapsedMs = 0;
+      lastResumeAt = 0;
+      player.hidden = true;
+      player.removeAttribute("src");
+      player.load();
+      showError("");
+      setState("idle");
+      timer.textContent = "00:00";
+      // Notify Streamlit that audio was cleared
+      currentRevision += 1;
+      setComponentValue({ audio_b64: null, mime: null, ext: null, size: 0, duration_ms: 0, rev: currentRevision });
+    }
+
+    btnStart.addEventListener("click", start);
+    btnPause.addEventListener("click", pause);
+    btnResume.addEventListener("click", resume);
+    btnStop.addEventListener("click", stop);
+    btnReset.addEventListener("click", reset);
+
+    // Streamlit ready & initial render
+    setComponentReady();
+    setState("idle");
+    autoHeight();
+
+    // Receive args from Python (we currently don't use any, but listen so the component
+    // marks itself active and resends value on rerender).
+    window.addEventListener("message", (event) => {
+      const data = event.data || {};
+      if (data.type === "streamlit:render") {
+        // ignored — values are pushed on user action.
+      }
+    });
+
+    // Re-measure when window resizes (e.g. theme/layout changes)
+    window.addEventListener("resize", autoHeight);
+  </script>
+</body>
+</html>
