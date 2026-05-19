@@ -20,22 +20,46 @@ elige una plantilla con tus medidas y genera los archivos imprimibles (PDF + PNG
 """
 )
 
+_TX_LABELS = {
+    "groq": ("Groq", "GROQ_API_KEY", "whisper-large-v3"),
+    "openai": ("OpenAI", "OPENAI_API_KEY", "whisper-1"),
+    "gemini": ("Gemini", "GOOGLE_API_KEY", "gemini-2.5-flash"),
+}
+_TEXT_LABELS = {
+    "openai": ("OpenAI", "OPENAI_API_KEY", "gpt-4o-mini"),
+    "gemini": ("Gemini", "GOOGLE_API_KEY", "gemini-2.5-flash"),
+}
+
 st.subheader("Estado")
 col1, col2 = st.columns(2)
 with col1:
-    if cfg.is_ai_ready:
-        provider_label = "Gemini" if cfg.ai_provider == "gemini" else "OpenAI"
-        st.success(f"✅ Proveedor IA: **{provider_label}**")
-        if cfg.ai_provider == "gemini":
-            st.caption("Usando GOOGLE_API_KEY · gemini-2.5-flash (audio + corrección)")
-        else:
-            st.caption("Usando OPENAI_API_KEY · whisper-1 + gpt-4o-mini")
-    else:
-        st.error("❌ Falta clave de IA")
-        st.caption(
-            "Añade `OPENAI_API_KEY` o `GOOGLE_API_KEY` a tu `.env`. "
-            "Gemini tiene tier gratuito en https://aistudio.google.com/apikey."
+    st.markdown("**🎤 Transcripción de audio**")
+    if cfg.is_transcription_ready:
+        prov, key_name, model = _TX_LABELS.get(
+            cfg.transcription_provider, ("?", "?", "?")
         )
+        st.success(f"✅ {prov} · `{model}`")
+        st.caption(f"Usando `{key_name}`")
+    else:
+        st.error("❌ Falta clave para transcripción")
+        st.caption(
+            "Añade `GROQ_API_KEY` (gratis), `OPENAI_API_KEY` o `GOOGLE_API_KEY` "
+            "a tus secrets."
+        )
+
+    st.markdown("**✍️ Corrección y refinado de texto**")
+    if cfg.is_ai_ready:
+        prov, key_name, model = _TEXT_LABELS.get(
+            cfg.ai_provider, ("?", "?", "?")
+        )
+        st.success(f"✅ {prov} · `{model}`")
+        st.caption(
+            f"Usando `{key_name}`. "
+            "Cambia `AI_PROVIDER` en secrets para forzar el otro."
+        )
+    else:
+        st.error("❌ Falta clave para texto")
+        st.caption("Añade `OPENAI_API_KEY` o `GOOGLE_API_KEY` a tus secrets.")
 with col2:
     if cfg.is_storage_ready:
         st.success(f"✅ Almacenamiento: `{cfg.storage_backend}`")
