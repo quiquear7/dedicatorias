@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import logging
 from typing import Iterable, List, Optional
 
-from core.ai_retry import with_retry
+from core.ai_retry import ContentBlockedError, TransientAIError, with_retry
 from core.config import get_config, get_gemini_client, get_openai_client
+
+logger = logging.getLogger(__name__)
 
 OPENAI_CORRECTION_MODEL = "gpt-4o-mini"
 GEMINI_CORRECTION_MODEL = "gemini-2.5-flash"
@@ -49,6 +52,43 @@ def _on_retry_toast(prefix: str):
     return _cb
 
 
+def _build_gemini_config(types_module, *, system_instruction, temperature: float):
+    """Configura Gemini 2.5 con thinking desactivado para tareas cortas."""
+    kwargs = {
+        "system_instruction": system_instruction,
+        "temperature": temperature,
+    }
+    try:
+        kwargs["thinking_config"] = types_module.ThinkingConfig(thinking_budget=0)
+    except Exception:  # noqa: BLE001
+        pass
+    return types_module.GenerateContentConfig(**kwargs)
+
+
+def _diagnose_empty_response(response, context: str) -> None:
+    """Inspecciona una respuesta de Gemini con `.text` vacío y lanza la
+    excepción apropiada (transitoria o de bloqueo) con info útil.
+    """
+    candidates = getattr(response, "candidates", None) or []
+    finish_reason = None
+    if candidates:
+        finish_reason = getattr(candidates[0], "finish_reason", None)
+    prompt_feedback = getattr(response, "prompt_feedback", None)
+    block_reason = getattr(prompt_feedback, "block_reason", None) if prompt_feedback else None
+
+    logger.warning(
+        "%s: respuesta vacía (finish_reason=%s, block_reason=%s)",
+        context,
+        finish_reason,
+        block_reason,
+    )
+
+    if block_reason:
+        raise ContentBlockedError(f"{context}: {block_reason}")
+    detail = f"finish_reason={finish_reason}" if finish_reason else "respuesta vacía"
+    raise TransientAIError(f"{context}: {detail}")
+
+
 def correct_dedication(raw_text: str) -> str:
     if not raw_text or not raw_text.strip():
         return ""
@@ -79,13 +119,17 @@ def _correct_gemini(raw_text: str) -> str:
     response = client.models.generate_content(
         model=GEMINI_CORRECTION_MODEL,
         contents=raw_text.strip(),
-        config=types.GenerateContentConfig(
+        config=_build_gemini_config(
+            types,
             system_instruction=SYSTEM_PROMPT,
             temperature=0.2,
         ),
     )
-    text = getattr(response, "text", None) or ""
-    return text.strip()
+    text = getattr(response, "text", None)
+    if text and text.strip():
+        return text.strip()
+    _diagnose_empty_response(response, "Corrección de texto")
+    return ""
 
 
 def refine_text(current_text: str, instruction: str) -> str:
@@ -108,13 +152,17 @@ def refine_text(current_text: str, instruction: str) -> str:
         response = client.models.generate_content(
             model=GEMINI_CORRECTION_MODEL,
             contents=user_message,
-            config=types.GenerateContentConfig(
+            config=_build_gemini_config(
+                types,
                 system_instruction=REFINE_SYSTEM_PROMPT,
                 temperature=0.5,
             ),
         )
-        text = getattr(response, "text", None) or ""
-        return text.strip()
+        text = getattr(response, "text", None)
+        if text and text.strip():
+            return text.strip()
+        _diagnose_empty_response(response, "Refinado de texto")
+        return ""
 
     def _run_openai() -> str:
         client = get_openai_client()
@@ -155,13 +203,17 @@ def rewrite_fragment(fragment: str, instruction: str) -> str:
         response = client.models.generate_content(
             model=GEMINI_CORRECTION_MODEL,
             contents=user_message,
-            config=types.GenerateContentConfig(
+            config=_build_gemini_config(
+                types,
                 system_instruction=REWRITE_FRAGMENT_SYSTEM_PROMPT,
                 temperature=0.5,
             ),
         )
-        text = getattr(response, "text", None) or ""
-        return text.strip()
+        text = getattr(response, "text", None)
+        if text and text.strip():
+            return text.strip()
+        _diagnose_empty_response(response, "Reescritura de frase")
+        return ""
 
     def _run_openai() -> str:
         client = get_openai_client()

@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import io
+import logging
 
-from core.ai_retry import with_retry
+from core.ai_retry import ContentBlockedError, TransientAIError, with_retry
 from core.config import get_config, get_gemini_client, get_openai_client
+
+logger = logging.getLogger(__name__)
 
 
 GEMINI_AUDIO_MODEL = "gemini-2.5-flash"
@@ -76,6 +79,48 @@ def _guess_mime(filename: str) -> str:
     return "audio/webm"
 
 
+def _build_gemini_config(types_module, *, system_instruction=None, temperature: float = 0.2):
+    """Configuración común para Gemini 2.5 Flash: thinking desactivado para
+    estos casos cortos (transcribir/corregir) evita que el modelo gaste su
+    presupuesto de tokens "pensando" y devuelva una respuesta vacía.
+    """
+    kwargs = {"temperature": temperature}
+    if system_instruction is not None:
+        kwargs["system_instruction"] = system_instruction
+    try:
+        kwargs["thinking_config"] = types_module.ThinkingConfig(thinking_budget=0)
+    except Exception:  # noqa: BLE001
+        # SDK antiguo sin ThinkingConfig: no pasa nada, sigue sin la opción.
+        pass
+    return types_module.GenerateContentConfig(**kwargs)
+
+
+def _diagnose_empty_response(response, context: str) -> None:
+    """Inspecciona una respuesta de Gemini con `.text` vacío y lanza la
+    excepción apropiada (transitoria o de bloqueo) con info útil.
+    """
+    candidates = getattr(response, "candidates", None) or []
+    finish_reason = None
+    if candidates:
+        finish_reason = getattr(candidates[0], "finish_reason", None)
+    prompt_feedback = getattr(response, "prompt_feedback", None)
+    block_reason = getattr(prompt_feedback, "block_reason", None) if prompt_feedback else None
+
+    logger.warning(
+        "%s: respuesta vacía (finish_reason=%s, block_reason=%s)",
+        context,
+        finish_reason,
+        block_reason,
+    )
+
+    if block_reason:
+        raise ContentBlockedError(f"{context}: {block_reason}")
+    # Cualquier otro caso (vacío, MAX_TOKENS, SAFETY sin block, …) lo tratamos
+    # como transitorio: la siguiente llamada normalmente devuelve algo.
+    detail = f"finish_reason={finish_reason}" if finish_reason else "respuesta vacía"
+    raise TransientAIError(f"{context}: {detail}")
+
+
 def _transcribe_gemini(audio_bytes: bytes, filename: str) -> str:
     from google.genai import types
 
@@ -87,8 +132,10 @@ def _transcribe_gemini(audio_bytes: bytes, filename: str) -> str:
             _TRANSCRIPTION_PROMPT,
             types.Part.from_bytes(data=audio_bytes, mime_type=mime),
         ],
+        config=_build_gemini_config(types, temperature=0.0),
     )
     text = getattr(response, "text", None)
-    if not text:
-        raise RuntimeError("Gemini no devolvió texto en la transcripción.")
-    return text.strip()
+    if text and text.strip():
+        return text.strip()
+    _diagnose_empty_response(response, "Transcripción de audio")
+    return ""  # inalcanzable, _diagnose_empty_response siempre lanza

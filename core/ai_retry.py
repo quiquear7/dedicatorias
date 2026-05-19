@@ -14,6 +14,14 @@ logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
 
+
+class TransientAIError(Exception):
+    """Error transitorio de la IA (respuesta vacía, timeout suave...) que merece reintento."""
+
+
+class ContentBlockedError(Exception):
+    """La IA rechazó/bloqueó la entrada por filtros de seguridad. NO se debe reintentar."""
+
 # Códigos HTTP que merecen reintento (transitorios).
 _RETRY_HTTP_CODES = {408, 425, 429, 500, 502, 503, 504}
 
@@ -41,6 +49,10 @@ _RETRY_EXC_NAMES = {
 
 def is_transient_error(exc: BaseException) -> bool:
     """Heurística: ¿merece la pena reintentar este error?"""
+    if isinstance(exc, TransientAIError):
+        return True
+    if isinstance(exc, ContentBlockedError):
+        return False
     code = getattr(exc, "code", None)
     if isinstance(code, int) and code in _RETRY_HTTP_CODES:
         return True
@@ -116,6 +128,18 @@ def with_retry(
 
 def friendly_ai_error(exc: BaseException) -> str:
     """Convierte una excepción de IA en un mensaje legible para el usuario."""
+    if isinstance(exc, ContentBlockedError):
+        return (
+            f"La IA rechazó el contenido por filtros de seguridad: {exc}. "
+            "Reformula el texto o vuelve a grabar el audio."
+        )
+    if isinstance(exc, TransientAIError):
+        return (
+            f"La IA devolvió una respuesta vacía tras varios reintentos ({exc}). "
+            "Suele ser un fallo puntual: espera unos segundos y prueba otra vez. "
+            "Si vuelve a ocurrir, comprueba que el audio tenga voz audible o que el "
+            "texto no sea demasiado corto."
+        )
     if is_transient_error(exc) or is_transient_message(exc):
         return (
             "La IA está saturada en este momento (picos de demanda). "
