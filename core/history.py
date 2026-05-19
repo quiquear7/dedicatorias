@@ -247,5 +247,46 @@ def delete_dedication(dedication_id: str) -> bool:
     return True
 
 
+def unrender_dedication(dedication_id: str) -> Optional[Dedication]:
+    """Borra solo los archivos renderizados (PDF/PNG/reverso) y devuelve la
+    dedicatoria al estado `pending`, conservando el texto, el audio y la
+    referencia al destinatario. Permite re-renderizar con otra plantilla sin
+    perder la dedicatoria.
+    """
+    storage = get_storage()
+    dedication = get_dedication(dedication_id)
+    if dedication is None:
+        return None
+
+    for path in (
+        dedication.card_pdf_path,
+        dedication.card_png_path,
+        dedication.card_back_png_path,
+    ):
+        if path:
+            try:
+                storage.delete(path)
+            except Exception:
+                pass
+
+    dedication.status = "pending"
+    dedication.template_id = None
+    dedication.template_snapshot = None
+    dedication.card_pdf_path = None
+    dedication.card_png_path = None
+    dedication.card_back_png_path = None
+    dedication.rendered_at = None
+
+    index = _load_index()
+    index[dedication.id] = dedication.to_dict()
+    _save_index(index)
+    return dedication
+
+
+def list_using_template(template_id: str) -> List[Dedication]:
+    """Devuelve las dedicatorias que están enlazadas a una plantilla dada."""
+    return [d for d in list_dedications() if d.template_id == template_id]
+
+
 def count_for_contact(contact_id: str) -> int:
     return sum(1 for d in list_dedications() if d.contact_id == contact_id)

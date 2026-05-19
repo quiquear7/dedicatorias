@@ -5,6 +5,7 @@ from typing import Optional
 
 import streamlit as st
 
+from core import history as history_module
 from core import templates as templates_module
 from core.auth import logout_button, require_login
 from core.config import get_config
@@ -260,10 +261,38 @@ with tab_list:
                         f"- **Creada**: {tpl.created_at}"
                     )
                 with cols[2]:
-                    if st.button("🗑️ Eliminar", key=f"del_{tpl.id}"):
-                        templates_module.delete_template(tpl.id)
-                        st.toast(f"Plantilla «{tpl.name}» eliminada.")
-                        st.rerun()
+                    if st.button(
+                        "🗑️ Eliminar",
+                        key=f"del_{tpl.id}",
+                        help="Borra solo el diseño. Las dedicatorias ya generadas se conservan: su tarjeta sigue descargable desde el historial.",
+                    ):
+                        st.session_state[f"_confirm_del_tpl_{tpl.id}"] = True
+
+                if st.session_state.get(f"_confirm_del_tpl_{tpl.id}"):
+                    linked = history_module.list_using_template(tpl.id)
+                    if linked:
+                        st.warning(
+                            f"Hay **{len(linked)} dedicatoria(s)** generadas con esta plantilla. "
+                            "Sus PDF/PNG y el texto **se conservan** en el historial; solo se "
+                            "borra el diseño de la plantilla. Si más adelante quieres re-renderizar "
+                            "alguna con otra plantilla, ve al historial y pulsa "
+                            "**«🔄 Tirar tarjeta y guardar como pendiente»** en esa dedicatoria."
+                        )
+                    confirm_cols = st.columns([1, 1, 4])
+                    with confirm_cols[0]:
+                        if st.button(
+                            "🗑️ Sí, borrar plantilla",
+                            key=f"del_tpl_confirm_{tpl.id}",
+                            type="primary",
+                        ):
+                            templates_module.delete_template(tpl.id)
+                            st.session_state.pop(f"_confirm_del_tpl_{tpl.id}", None)
+                            st.toast(f"Plantilla «{tpl.name}» eliminada.")
+                            st.rerun()
+                    with confirm_cols[1]:
+                        if st.button("✋ Cancelar", key=f"del_tpl_cancel_{tpl.id}"):
+                            st.session_state.pop(f"_confirm_del_tpl_{tpl.id}", None)
+                            st.rerun()
 
                 st.divider()
                 st.markdown("**Editar:**")

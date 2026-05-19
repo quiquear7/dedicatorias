@@ -323,10 +323,44 @@ with tab_rendered:
                             st.query_params["duplicate"] = d.id
                             st.switch_page("pages/2_Generar_dedicatoria.py")
                     with actions[del_idx]:
-                        if st.button("🗑️ Eliminar", key=f"del_{d.id}"):
-                            history_module.delete_dedication(d.id)
-                            st.toast("Eliminada.")
-                            st.rerun()
+                        if st.button(
+                            "🗑️ Eliminar",
+                            key=f"del_{d.id}",
+                            help="Borra la dedicatoria por completo: texto, audio y archivos renderizados.",
+                        ):
+                            st.session_state[f"_confirm_del_{d.id}"] = True
+
+                    if st.session_state.get(f"_confirm_del_{d.id}"):
+                        st.warning(
+                            "Vas a **borrar toda la dedicatoria** (texto, audio y tarjeta). "
+                            "Si solo quieres tirar la tarjeta renderizada y conservar el texto "
+                            "para cambiar de plantilla, usa **«🔄 Tirar tarjeta y guardar como pendiente»**."
+                        )
+                        confirm_cols = st.columns([1, 1, 1])
+                        with confirm_cols[0]:
+                            if st.button(
+                                "🗑️ Sí, borrar todo",
+                                key=f"del_confirm_{d.id}",
+                                type="primary",
+                            ):
+                                history_module.delete_dedication(d.id)
+                                st.session_state.pop(f"_confirm_del_{d.id}", None)
+                                st.toast("Dedicatoria eliminada.")
+                                st.rerun()
+                        with confirm_cols[1]:
+                            if st.button(
+                                "🔄 Tirar tarjeta y guardar como pendiente",
+                                key=f"unrender_{d.id}",
+                                help="Borra la tarjeta renderizada (PDF/PNG) pero conserva el texto y los datos en «Pendientes», listo para renderizar con otra plantilla.",
+                            ):
+                                history_module.unrender_dedication(d.id)
+                                st.session_state.pop(f"_confirm_del_{d.id}", None)
+                                st.toast("Tarjeta borrada. La dedicatoria queda como pendiente.")
+                                st.rerun()
+                        with confirm_cols[2]:
+                            if st.button("✋ Cancelar", key=f"del_cancel_{d.id}"):
+                                st.session_state.pop(f"_confirm_del_{d.id}", None)
+                                st.rerun()
 
                     generic_now = st.checkbox(
                         "Marcar como genérica",
