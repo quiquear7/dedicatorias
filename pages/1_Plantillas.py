@@ -139,6 +139,60 @@ def _style_form(prefix: str, default: TextStyle) -> TextStyle:
     )
 
 
+def _preview_with_zones(
+    *,
+    source_bytes: bytes,
+    source_type: str,
+    width_mm: float,
+    height_mm: float,
+    text_zone: Zone,
+    text_style: TextStyle,
+    name_zone: Optional[Zone],
+    name_style: Optional[TextStyle],
+    sample_name: str = "Nombre destinatario",
+    sample_text: str = "Ejemplo de dedicatoria. Lorem ipsum dolor sit amet, consectetur adipiscing elit.",
+) -> bytes:
+    """Renderiza el preview de una plantilla incluyendo:
+    - El diseño de fondo
+    - El texto de muestra en sus zonas
+    - Un recuadro magenta sobre cada zona, para que el usuario vea dónde caen
+    """
+    from core.rendering import _draw_text_pillow, mm_to_px
+    from PIL import Image, ImageDraw
+
+    if source_type == "pdf":
+        import pypdfium2 as pdfium
+
+        pdf = pdfium.PdfDocument(source_bytes)
+        page = pdf[0]
+        bitmap = page.render(scale=PREVIEW_DPI / 72.0)
+        bg = bitmap.to_pil().convert("RGBA")
+        pdf.close()
+    else:
+        bg = Image.open(io.BytesIO(source_bytes)).convert("RGBA")
+
+    target_w = mm_to_px(width_mm, PREVIEW_DPI)
+    target_h = mm_to_px(height_mm, PREVIEW_DPI)
+    if bg.size != (target_w, target_h):
+        bg = bg.resize((target_w, target_h), Image.LANCZOS)
+
+    if name_zone and name_style:
+        _draw_text_pillow(bg, sample_name, name_zone, name_style, PREVIEW_DPI)
+    _draw_text_pillow(bg, sample_text, text_zone, text_style, PREVIEW_DPI)
+
+    draw = ImageDraw.Draw(bg)
+    for zone in [z for z in [text_zone, name_zone] if z is not None]:
+        x0 = mm_to_px(zone.x_mm, PREVIEW_DPI)
+        y0 = mm_to_px(zone.y_mm, PREVIEW_DPI)
+        x1 = x0 + mm_to_px(zone.width_mm, PREVIEW_DPI)
+        y1 = y0 + mm_to_px(zone.height_mm, PREVIEW_DPI)
+        draw.rectangle([x0, y0, x1, y1], outline=(255, 0, 128, 255), width=2)
+
+    buf = io.BytesIO()
+    bg.convert("RGB").save(buf, format="PNG")
+    return buf.getvalue()
+
+
 tab_create, tab_list = st.tabs(["➕ Nueva plantilla", f"📚 Existentes ({len(templates_module.list_templates())})"])
 
 with tab_create:
@@ -183,13 +237,9 @@ with tab_create:
             st.info("Sube un diseño para ver el preview con texto de ejemplo.")
         else:
             try:
-                source_bytes = uploaded.getvalue()
-                source_type = _detect_source_type(uploaded.name)
-                fake_template = Template(
-                    id="preview",
-                    name=name or "preview",
-                    source_path="preview/source",
-                    source_type=source_type,  # type: ignore[arg-type]
+                preview_bytes = _preview_with_zones(
+                    source_bytes=uploaded.getvalue(),
+                    source_type=_detect_source_type(uploaded.name),
                     width_mm=width_mm,
                     height_mm=height_mm,
                     text_zone=text_zone,
@@ -197,46 +247,7 @@ with tab_create:
                     name_zone=name_zone,
                     name_style=name_style,
                 )
-
-                from core.rendering import _draw_text_pillow, _hex_to_rgba, mm_to_px
-                from PIL import Image, ImageDraw
-
-                if source_type == "pdf":
-                    import pypdfium2 as pdfium
-
-                    pdf = pdfium.PdfDocument(source_bytes)
-                    page = pdf[0]
-                    bitmap = page.render(scale=PREVIEW_DPI / 72.0)
-                    bg = bitmap.to_pil().convert("RGBA")
-                    pdf.close()
-                else:
-                    bg = Image.open(io.BytesIO(source_bytes)).convert("RGBA")
-                target_w = mm_to_px(width_mm, PREVIEW_DPI)
-                target_h = mm_to_px(height_mm, PREVIEW_DPI)
-                if bg.size != (target_w, target_h):
-                    bg = bg.resize((target_w, target_h), Image.LANCZOS)
-
-                if name_zone:
-                    _draw_text_pillow(bg, "Nombre destinatario", name_zone, name_style or text_style, PREVIEW_DPI)
-                _draw_text_pillow(
-                    bg,
-                    "Ejemplo de dedicatoria. Lorem ipsum dolor sit amet, consectetur adipiscing elit.",
-                    text_zone,
-                    text_style,
-                    PREVIEW_DPI,
-                )
-
-                draw = ImageDraw.Draw(bg)
-                for zone in [z for z in [text_zone, name_zone] if z is not None]:
-                    x0 = mm_to_px(zone.x_mm, PREVIEW_DPI)
-                    y0 = mm_to_px(zone.y_mm, PREVIEW_DPI)
-                    x1 = x0 + mm_to_px(zone.width_mm, PREVIEW_DPI)
-                    y1 = y0 + mm_to_px(zone.height_mm, PREVIEW_DPI)
-                    draw.rectangle([x0, y0, x1, y1], outline=(255, 0, 128, 255), width=2)
-
-                preview_buf = io.BytesIO()
-                bg.convert("RGB").save(preview_buf, format="PNG")
-                st.image(preview_buf.getvalue(), use_container_width=True)
+                st.image(preview_bytes, use_container_width=True)
                 st.caption("El recuadro magenta indica la zona definida (sólo visible en el preview).")
             except Exception as e:  # noqa: BLE001
                 st.error(f"No se pudo generar el preview: {e}")
@@ -435,83 +446,84 @@ with tab_list:
                         st.rerun()
                 else:
                     st.markdown("### ✏️ Editar plantilla")
-                    edit_dim = st.columns(2)
-                    with edit_dim[0]:
-                        ew = st.number_input(
-                            "Ancho (mm)",
-                            min_value=10.0,
-                            max_value=1000.0,
-                            value=float(tpl.width_mm),
-                            step=1.0,
-                            key=f"edit_w_{tpl.id}",
-                        )
-                    with edit_dim[1]:
-                        eh = st.number_input(
-                            "Alto (mm)",
-                            min_value=10.0,
-                            max_value=1000.0,
-                            value=float(tpl.height_mm),
-                            step=1.0,
-                            key=f"edit_h_{tpl.id}",
-                        )
+                    edit_left, edit_right = st.columns([1, 1])
 
-                    st.markdown("**🅰️ Zona y estilo del cuerpo del texto** (dedicatoria)")
-                    new_text_zone = _zone_form(f"edit_tz_{tpl.id}", tpl.text_zone, ew, eh)
-                    new_text_style = _style_form(f"edit_ts_{tpl.id}", tpl.text_style)
+                    with edit_left:
+                        edit_dim = st.columns(2)
+                        with edit_dim[0]:
+                            ew = st.number_input(
+                                "Ancho (mm)",
+                                min_value=10.0,
+                                max_value=1000.0,
+                                value=float(tpl.width_mm),
+                                step=1.0,
+                                key=f"edit_w_{tpl.id}",
+                            )
+                        with edit_dim[1]:
+                            eh = st.number_input(
+                                "Alto (mm)",
+                                min_value=10.0,
+                                max_value=1000.0,
+                                value=float(tpl.height_mm),
+                                step=1.0,
+                                key=f"edit_h_{tpl.id}",
+                            )
 
-                    has_name_default = tpl.name_zone is not None
-                    keep_name_zone = st.checkbox(
-                        "Mantener zona separada para el nombre del destinatario",
-                        value=has_name_default,
-                        key=f"edit_use_name_{tpl.id}",
-                    )
-                    new_name_zone = None
-                    new_name_style = None
-                    if keep_name_zone:
-                        st.markdown("**🆎 Zona y estilo del NOMBRE del destinatario** (título)")
-                        default_name_zone = tpl.name_zone or Zone(
-                            x_mm=10.0, y_mm=10.0, width_mm=max(10.0, ew - 20.0), height_mm=12.0
-                        )
-                        default_name_style = tpl.name_style or TextStyle(
-                            font_size_pt=18.0, align="center", bold=True
-                        )
-                        new_name_zone = _zone_form(
-                            f"edit_nz_{tpl.id}", default_name_zone, ew, eh
-                        )
-                        new_name_style = _style_form(f"edit_ns_{tpl.id}", default_name_style)
+                        st.markdown("**🅰️ Zona y estilo del cuerpo del texto** (dedicatoria)")
+                        new_text_zone = _zone_form(f"edit_tz_{tpl.id}", tpl.text_zone, ew, eh)
+                        new_text_style = _style_form(f"edit_ts_{tpl.id}", tpl.text_style)
 
-                    # Vista previa con los nuevos valores
-                    with st.expander("👁️ Previsualizar cambios", expanded=False):
+                        has_name_default = tpl.name_zone is not None
+                        keep_name_zone = st.checkbox(
+                            "Mantener zona separada para el nombre del destinatario",
+                            value=has_name_default,
+                            key=f"edit_use_name_{tpl.id}",
+                        )
+                        new_name_zone = None
+                        new_name_style = None
+                        if keep_name_zone:
+                            st.markdown("**🆎 Zona y estilo del NOMBRE del destinatario** (título)")
+                            default_name_zone = tpl.name_zone or Zone(
+                                x_mm=10.0, y_mm=10.0, width_mm=max(10.0, ew - 20.0), height_mm=12.0
+                            )
+                            default_name_style = tpl.name_style or TextStyle(
+                                font_size_pt=18.0, align="center", bold=True
+                            )
+                            new_name_zone = _zone_form(
+                                f"edit_nz_{tpl.id}", default_name_zone, ew, eh
+                            )
+                            new_name_style = _style_form(f"edit_ns_{tpl.id}", default_name_style)
+
+                    with edit_right:
+                        st.markdown("**👁️ Vista previa**")
                         try:
-                            preview_tpl = Template(
-                                id=tpl.id,
-                                name=tpl.name,
-                                source_path=tpl.source_path,
-                                source_type=tpl.source_type,
+                            src_bytes, src_type = templates_module.get_source_bytes(tpl)
+                            preview_bytes = _preview_with_zones(
+                                source_bytes=src_bytes,
+                                source_type=src_type,
                                 width_mm=ew,
                                 height_mm=eh,
                                 text_zone=new_text_zone,
                                 text_style=new_text_style,
                                 name_zone=new_name_zone,
                                 name_style=new_name_style,
-                                back_source_path=tpl.back_source_path,
-                                back_source_type=tpl.back_source_type,
                             )
-                            preview_bytes = render_preview(
-                                preview_tpl,
-                                "Nombre destinatario",
-                                "Esta es una dedicatoria de ejemplo para previsualizar la fuente, el color y la posición.",
+                            st.image(preview_bytes, use_container_width=True)
+                            st.caption(
+                                "El recuadro magenta indica las zonas definidas. "
+                                "Se actualiza al cambiar cualquier valor."
                             )
-                            st.image(preview_bytes, use_container_width=True, caption="Vista previa con los cambios")
                         except Exception as e:  # noqa: BLE001
                             st.warning(f"No se pudo generar la vista previa: {e}")
 
+                    # Botones de acción, justo debajo del editor (a lo ancho)
                     act_cols = st.columns([1, 1, 4])
                     with act_cols[0]:
                         if st.button(
                             "💾 Guardar cambios",
                             key=f"edit_save_{tpl.id}",
                             type="primary",
+                            use_container_width=True,
                         ):
                             try:
                                 templates_module.update_template(
@@ -529,6 +541,6 @@ with tab_list:
                             except Exception as e:  # noqa: BLE001
                                 st.error(f"No se pudo guardar: {e}")
                     with act_cols[1]:
-                        if st.button("✋ Cancelar", key=f"edit_cancel_{tpl.id}"):
+                        if st.button("✋ Cancelar", key=f"edit_cancel_{tpl.id}", use_container_width=True):
                             st.session_state.pop(edit_open_key, None)
                             st.rerun()
