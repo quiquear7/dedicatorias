@@ -10,7 +10,12 @@ from core import templates as templates_module
 from core.auth import logout_button, require_login
 from core.config import get_config
 from core.models import Template, TextStyle, Zone
-from core.rendering import PREVIEW_DPI, list_available_fonts, render_preview
+from core.rendering import (
+    PREVIEW_DPI,
+    font_available_variants,
+    list_available_fonts,
+    render_preview,
+)
 
 st.set_page_config(page_title="Plantillas", page_icon="🎨", layout="wide")
 require_login()
@@ -79,13 +84,50 @@ def _style_form(prefix: str, default: TextStyle) -> TextStyle:
         )
     with cols[3]:
         color = st.color_picker("Color", value=default.color_hex, key=f"{prefix}_color")
+    variants_available = set(font_available_variants(font_family))
+    has_bold = "bold" in variants_available or "bolditalic" in variants_available
+    has_italic = "italic" in variants_available or "bolditalic" in variants_available
+
     cols2 = st.columns([1, 1, 2])
     with cols2[0]:
-        bold = st.checkbox("Negrita", value=default.bold, key=f"{prefix}_bold")
+        bold = st.checkbox(
+            "Negrita",
+            value=default.bold and has_bold,
+            key=f"{prefix}_bold",
+            disabled=not has_bold,
+            help=(
+                "Esta fuente no incluye variante negrita."
+                if not has_bold
+                else None
+            ),
+        )
     with cols2[1]:
-        italic = st.checkbox("Cursiva", value=default.italic, key=f"{prefix}_italic")
+        italic = st.checkbox(
+            "Cursiva",
+            value=default.italic and has_italic,
+            key=f"{prefix}_italic",
+            disabled=not has_italic,
+            help=(
+                "Esta fuente no incluye variante cursiva."
+                if not has_italic
+                else None
+            ),
+        )
     with cols2[2]:
         line_height = st.number_input("Interlineado", min_value=0.8, max_value=3.0, value=float(default.line_height), step=0.1, key=f"{prefix}_lh")
+
+    if variants_available:
+        missing = [
+            k for k in ("regular", "bold", "italic", "bolditalic") if k not in variants_available
+        ]
+        if missing:
+            st.caption(
+                f"ℹ️ «{font_family}» disponible en: "
+                + ", ".join(sorted(variants_available))
+                + ". Sin variantes: "
+                + ", ".join(missing)
+                + "."
+            )
     return TextStyle(
         font_family=font_family,
         font_size_pt=size,

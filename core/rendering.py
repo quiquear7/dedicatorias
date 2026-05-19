@@ -173,6 +173,18 @@ def list_available_fonts() -> List[str]:
     return list(_load_font_library().keys())
 
 
+def font_available_variants(family_name: str) -> List[str]:
+    """Variantes ("regular", "bold", "italic", "bolditalic") realmente
+    disponibles en disco para la familia indicada. Si la familia no existe
+    o no hay variantes, devuelve lista vacía.
+    """
+    library = _load_font_library()
+    variants = library.get(family_name)
+    if not variants:
+        return []
+    return list(variants.keys())
+
+
 def _ttf_path_for_style(style: TextStyle) -> Optional[str]:
     """Ruta del archivo TTF a usar para esta combinación de familia+bold+italic.
     Devuelve None si no hay TTF disponible (cae al default de Pillow / Helvetica).
