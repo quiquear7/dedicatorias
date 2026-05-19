@@ -34,9 +34,11 @@ def _get(key: str, default: Optional[str] = None) -> Optional[str]:
 
 @dataclass(frozen=True)
 class AppConfig:
-    ai_provider: str
+    ai_provider: str  # proveedor para corrección de texto (openai, gemini)
+    transcription_provider: str  # proveedor para audio (openai, gemini, groq)
     openai_api_key: Optional[str]
     google_api_key: Optional[str]
+    groq_api_key: Optional[str]
     storage_backend: str
     local_storage_root: Path
     s3_bucket: Optional[str]
@@ -55,12 +57,26 @@ class AppConfig:
         return False
 
     @property
+    def is_transcription_ready(self) -> bool:
+        if self.transcription_provider == "groq":
+            return bool(self.groq_api_key)
+        if self.transcription_provider == "openai":
+            return bool(self.openai_api_key)
+        if self.transcription_provider == "gemini":
+            return bool(self.google_api_key)
+        return False
+
+    @property
     def is_openai_ready(self) -> bool:
         return bool(self.openai_api_key)
 
     @property
     def is_gemini_ready(self) -> bool:
         return bool(self.google_api_key)
+
+    @property
+    def is_groq_ready(self) -> bool:
+        return bool(self.groq_api_key)
 
     @property
     def is_storage_ready(self) -> bool:
@@ -76,6 +92,7 @@ def get_config() -> AppConfig:
     local_root = Path(_get("LOCAL_STORAGE_ROOT") or project_root / "data")
     google_key = _get("GOOGLE_API_KEY") or _get("GEMINI_API_KEY")
     openai_key = _get("OPENAI_API_KEY")
+    groq_key = _get("GROQ_API_KEY")
     explicit_provider = (_get("AI_PROVIDER") or "").lower().strip()
     if explicit_provider in {"openai", "gemini"}:
         provider = explicit_provider
@@ -85,10 +102,25 @@ def get_config() -> AppConfig:
         provider = "openai"
     else:
         provider = "openai"  # ambos o ninguno: openai por defecto
+
+    # Proveedor de transcripción de audio (puede ser distinto del de texto).
+    # Prioridad: var explícita > Groq si hay key > el mismo proveedor de texto.
+    explicit_tx = (_get("TRANSCRIPTION_PROVIDER") or "").lower().strip()
+    if explicit_tx in {"openai", "gemini", "groq"}:
+        transcription_provider = explicit_tx
+    elif groq_key:
+        transcription_provider = "groq"
+    elif openai_key:
+        transcription_provider = "openai"
+    else:
+        transcription_provider = provider
+
     return AppConfig(
         ai_provider=provider,
+        transcription_provider=transcription_provider,
         openai_api_key=openai_key,
         google_api_key=google_key,
+        groq_api_key=groq_key,
         storage_backend=backend,
         local_storage_root=local_root,
         s3_bucket=_get("S3_BUCKET"),
@@ -123,6 +155,25 @@ def get_gemini_client():
             "https://aistudio.google.com/apikey y añádela a tu .env."
         )
     return genai.Client(api_key=cfg.google_api_key)
+
+
+@lru_cache(maxsize=1)
+def get_groq_client():
+    """Devuelve un cliente OpenAI apuntando al endpoint de Groq.
+
+    La API de Groq es compatible con la de OpenAI, así que reutilizamos el SDK
+    sin añadir dependencias. El modelo `whisper-large-v3` se sirve gratis con
+    cuotas amplias para audio en español.
+    """
+    from openai import OpenAI
+
+    cfg = get_config()
+    if not cfg.groq_api_key:
+        raise RuntimeError(
+            "GROQ_API_KEY no está configurada. Crea una clave gratuita en "
+            "https://console.groq.com/keys (no pide tarjeta) y añádela a tus secrets."
+        )
+    return OpenAI(api_key=cfg.groq_api_key, base_url="https://api.groq.com/openai/v1")
 
 
 @lru_cache(maxsize=1)

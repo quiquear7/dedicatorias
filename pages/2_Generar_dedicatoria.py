@@ -368,8 +368,11 @@ elif step == 2:
     tab_audio, tab_text = st.tabs(["🎤 Grabar audio", "⌨️ Escribir texto"])
 
     with tab_audio:
-        if not cfg.is_ai_ready:
-            st.warning("No hay clave de IA configurada. Añade OPENAI_API_KEY o GOOGLE_API_KEY al .env.")
+        if not cfg.is_transcription_ready:
+            st.warning(
+                "No hay clave de IA para transcripción. Añade `GROQ_API_KEY` (gratis), "
+                "`OPENAI_API_KEY` o `GOOGLE_API_KEY` a tus secrets."
+            )
         st.info(
             "💡 **Para que se grabe todo bien**: pulsa **Grabar**, espera ~1s en silencio antes de hablar, "
             "di la dedicatoria, y al terminar espera otro segundo antes de pulsar **Detener**. "
@@ -388,8 +391,12 @@ elif step == 2:
             cols_a = st.columns([1, 1])
             with cols_a[0]:
                 if st.button("Transcribir y corregir", type="primary"):
-                    provider = "Gemini" if cfg.ai_provider == "gemini" else "Whisper"
-                    with st.spinner(f"Transcribiendo con {provider}..."):
+                    provider_label = {
+                        "groq": "Whisper en Groq",
+                        "openai": "Whisper (OpenAI)",
+                        "gemini": "Gemini",
+                    }.get(cfg.transcription_provider, "IA")
+                    with st.spinner(f"Transcribiendo con {provider_label}..."):
                         try:
                             raw = transcribe(rec.audio_bytes, filename=rec.filename)
                         except Exception as e:  # noqa: BLE001

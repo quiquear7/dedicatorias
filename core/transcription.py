@@ -4,12 +4,18 @@ import io
 import logging
 
 from core.ai_retry import ContentBlockedError, TransientAIError, with_retry
-from core.config import get_config, get_gemini_client, get_openai_client
+from core.config import (
+    get_config,
+    get_gemini_client,
+    get_groq_client,
+    get_openai_client,
+)
 
 logger = logging.getLogger(__name__)
 
 
 GEMINI_AUDIO_MODEL = "gemini-2.5-flash"
+GROQ_AUDIO_MODEL = "whisper-large-v3"
 
 
 def _on_retry_toast_transcribe(attempt: int, exc: BaseException, delay: float) -> None:  # noqa: ARG001
@@ -34,7 +40,16 @@ def transcribe(audio_bytes: bytes, *, language: str = "es", filename: str = "aud
     if not audio_bytes:
         raise ValueError("audio_bytes está vacío.")
     cfg = get_config()
-    if cfg.ai_provider == "gemini":
+    provider = cfg.transcription_provider
+    if provider == "groq":
+        return with_retry(
+            _transcribe_groq,
+            audio_bytes,
+            language,
+            filename,
+            on_retry=_on_retry_toast_transcribe,
+        )
+    if provider == "gemini":
         return with_retry(
             _transcribe_gemini, audio_bytes, filename, on_retry=_on_retry_toast_transcribe
         )
@@ -45,6 +60,22 @@ def transcribe(audio_bytes: bytes, *, language: str = "es", filename: str = "aud
         filename,
         on_retry=_on_retry_toast_transcribe,
     )
+
+
+def _transcribe_groq(audio_bytes: bytes, language: str, filename: str) -> str:
+    """Transcribe usando Groq con whisper-large-v3 (compatible con la API de OpenAI)."""
+    client = get_groq_client()
+    audio_file = io.BytesIO(audio_bytes)
+    audio_file.name = filename
+    response = client.audio.transcriptions.create(
+        model=GROQ_AUDIO_MODEL,
+        file=audio_file,
+        language=language,
+        response_format="text",
+    )
+    if isinstance(response, str):
+        return response.strip()
+    return getattr(response, "text", str(response)).strip()
 
 
 def _transcribe_openai(audio_bytes: bytes, language: str, filename: str) -> str:
