@@ -529,8 +529,11 @@ def render_pdf(
     dedication: str,
     *,
     dpi: int = DEFAULT_DPI,
+    include_back: bool = True,
 ) -> Tuple[bytes, dict]:
-    """Genera un PDF con el frente (texto) y, si la plantilla tiene reverso, una segunda página con la imagen del reverso."""
+    """Genera un PDF con el frente (texto). Si la plantilla tiene reverso e
+    `include_back=True`, añade una segunda página con esa imagen.
+    """
     page_w_pt = template.width_mm * mm
     page_h_pt = template.height_mm * mm
 
@@ -562,8 +565,8 @@ def render_pdf(
         warnings["text_overflow"] = True
     c.showPage()
 
-    # ---- Página 2: reverso (si existe) ----
-    back_image = _load_back_image(template, dpi)
+    # ---- Página 2: reverso (si existe y el caller lo quiere) ----
+    back_image = _load_back_image(template, dpi) if include_back else None
     if back_image is not None:
         back_buf = io.BytesIO()
         back_image.convert("RGB").save(back_buf, format="PNG", optimize=True)

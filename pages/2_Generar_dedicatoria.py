@@ -61,6 +61,7 @@ DEFAULT_STATE = {
     "final_text_rev": 0,  # se incrementa para forzar refresco del text_area cuando la IA reescribe
     "sentences_rev": 0,  # se incrementa para resetear checkboxes del editor por frases
     "audio_widget_rev": 0,  # se incrementa para resetear el widget de grabación
+    "include_back": True,  # incluir la cara trasera en PDF/ZIP cuando la plantilla la tiene
 }
 
 for key, default in DEFAULT_STATE.items():
@@ -778,6 +779,20 @@ elif step == 4:
             except Exception as e:  # noqa: BLE001
                 st.error(f"Error en preview: {e}")
 
+        # Toggle para excluir el reverso (sólo tiene sentido si la plantilla lo tiene)
+        if chosen.has_back:
+            st.session_state["include_back"] = st.checkbox(
+                "📄 Incluir reverso en el PDF/PNG",
+                value=st.session_state.get("include_back", True),
+                key="include_back_toggle",
+                help=(
+                    "Esta plantilla tiene reverso. Desmarca esta casilla si quieres "
+                    "generar solo la parte delantera de la tarjeta para esta dedicatoria."
+                ),
+            )
+        else:
+            st.session_state["include_back"] = False
+
         cols = st.columns([1, 1, 2])
         with cols[0]:
             _back_button(3)
@@ -843,6 +858,7 @@ elif step == 5:
                 if st.session_state["input_mode"] == "audio"
                 else None
             )
+            include_back = bool(st.session_state.get("include_back", True)) and template.has_back
             progress = st.progress(0.0, text="Renderizando...")
             for i, r in enumerate(recipients_now):
                 name = r["name"]
@@ -850,9 +866,14 @@ elif step == 5:
                     i / max(1, len(recipients_now)),
                     text=f"Renderizando «{name}» ({i + 1}/{len(recipients_now)})...",
                 )
-                pdf_bytes, pdf_warn = render_pdf(template, name, st.session_state["final_text"])
+                pdf_bytes, pdf_warn = render_pdf(
+                    template,
+                    name,
+                    st.session_state["final_text"],
+                    include_back=include_back,
+                )
                 png_bytes, png_warn = render_png(template, name, st.session_state["final_text"])
-                back_png_bytes = render_back_png(template) if template.has_back else None
+                back_png_bytes = render_back_png(template) if include_back else None
                 text_overflow = text_overflow or pdf_warn.get("text_overflow") or png_warn.get("text_overflow")
                 name_overflow = name_overflow or pdf_warn.get("name_overflow") or png_warn.get("name_overflow")
 
