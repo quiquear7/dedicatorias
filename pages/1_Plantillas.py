@@ -10,7 +10,7 @@ from core import templates as templates_module
 from core.auth import logout_button, require_login
 from core.config import get_config
 from core.models import Template, TextStyle, Zone
-from core.rendering import PREVIEW_DPI, render_preview
+from core.rendering import PREVIEW_DPI, list_available_fonts, render_preview
 
 st.set_page_config(page_title="Plantillas", page_icon="🎨", layout="wide")
 require_login()
@@ -45,14 +45,28 @@ def _zone_form(prefix: str, default: Zone, max_w: float, max_h: float) -> Zone:
 
 
 def _style_form(prefix: str, default: TextStyle) -> TextStyle:
+    available_fonts = list_available_fonts() or [default.font_family or "Helvetica"]
+    # Asegura que la fuente actual de la plantilla esté en la lista aunque no
+    # esté instalada en este entorno (p. ej. plantilla creada en otra máquina).
+    if default.font_family and default.font_family not in available_fonts:
+        available_fonts = [default.font_family, *available_fonts]
+    try:
+        font_index = available_fonts.index(default.font_family) if default.font_family else 0
+    except ValueError:
+        font_index = 0
+
     cols = st.columns([2, 1, 1, 1])
     with cols[0]:
         font_family = st.selectbox(
             "Fuente",
-            options=["Helvetica"],
-            index=0,
+            options=available_fonts,
+            index=font_index,
             key=f"{prefix}_font",
-            help="De momento sólo Helvetica. Las fuentes personalizadas llegan en una fase posterior.",
+            help=(
+                "Las fuentes disponibles son las instaladas en el entorno del servidor. "
+                "Puedes añadir más colocando archivos `.ttf` en `assets/fonts/` "
+                "(con sufijos `-Bold`, `-Italic`, `-BoldItalic` para variantes)."
+            ),
         )
     with cols[1]:
         size = st.number_input("Tamaño (pt)", min_value=4.0, max_value=120.0, value=float(default.font_size_pt), step=1.0, key=f"{prefix}_size")
@@ -366,3 +380,113 @@ with tab_list:
                                 st.rerun()
                             except Exception as e:  # noqa: BLE001
                                 st.error(str(e))
+
+                st.divider()
+                edit_open_key = f"edit_open_{tpl.id}"
+                if not st.session_state.get(edit_open_key):
+                    if st.button(
+                        "✏️ Editar medidas, zonas y fuentes",
+                        key=f"edit_btn_{tpl.id}",
+                        help="Cambia dimensiones, posición/tamaño de la zona de texto y de nombre, y la fuente de cada una.",
+                    ):
+                        st.session_state[edit_open_key] = True
+                        st.rerun()
+                else:
+                    st.markdown("### ✏️ Editar plantilla")
+                    edit_dim = st.columns(2)
+                    with edit_dim[0]:
+                        ew = st.number_input(
+                            "Ancho (mm)",
+                            min_value=10.0,
+                            max_value=1000.0,
+                            value=float(tpl.width_mm),
+                            step=1.0,
+                            key=f"edit_w_{tpl.id}",
+                        )
+                    with edit_dim[1]:
+                        eh = st.number_input(
+                            "Alto (mm)",
+                            min_value=10.0,
+                            max_value=1000.0,
+                            value=float(tpl.height_mm),
+                            step=1.0,
+                            key=f"edit_h_{tpl.id}",
+                        )
+
+                    st.markdown("**🅰️ Zona y estilo del cuerpo del texto** (dedicatoria)")
+                    new_text_zone = _zone_form(f"edit_tz_{tpl.id}", tpl.text_zone, ew, eh)
+                    new_text_style = _style_form(f"edit_ts_{tpl.id}", tpl.text_style)
+
+                    has_name_default = tpl.name_zone is not None
+                    keep_name_zone = st.checkbox(
+                        "Mantener zona separada para el nombre del destinatario",
+                        value=has_name_default,
+                        key=f"edit_use_name_{tpl.id}",
+                    )
+                    new_name_zone = None
+                    new_name_style = None
+                    if keep_name_zone:
+                        st.markdown("**🆎 Zona y estilo del NOMBRE del destinatario** (título)")
+                        default_name_zone = tpl.name_zone or Zone(
+                            x_mm=10.0, y_mm=10.0, width_mm=max(10.0, ew - 20.0), height_mm=12.0
+                        )
+                        default_name_style = tpl.name_style or TextStyle(
+                            font_size_pt=18.0, align="center", bold=True
+                        )
+                        new_name_zone = _zone_form(
+                            f"edit_nz_{tpl.id}", default_name_zone, ew, eh
+                        )
+                        new_name_style = _style_form(f"edit_ns_{tpl.id}", default_name_style)
+
+                    # Vista previa con los nuevos valores
+                    with st.expander("👁️ Previsualizar cambios", expanded=False):
+                        try:
+                            preview_tpl = Template(
+                                id=tpl.id,
+                                name=tpl.name,
+                                source_path=tpl.source_path,
+                                source_type=tpl.source_type,
+                                width_mm=ew,
+                                height_mm=eh,
+                                text_zone=new_text_zone,
+                                text_style=new_text_style,
+                                name_zone=new_name_zone,
+                                name_style=new_name_style,
+                                back_source_path=tpl.back_source_path,
+                                back_source_type=tpl.back_source_type,
+                            )
+                            preview_bytes = render_preview(
+                                preview_tpl,
+                                "Nombre destinatario",
+                                "Esta es una dedicatoria de ejemplo para previsualizar la fuente, el color y la posición.",
+                            )
+                            st.image(preview_bytes, use_container_width=True, caption="Vista previa con los cambios")
+                        except Exception as e:  # noqa: BLE001
+                            st.warning(f"No se pudo generar la vista previa: {e}")
+
+                    act_cols = st.columns([1, 1, 4])
+                    with act_cols[0]:
+                        if st.button(
+                            "💾 Guardar cambios",
+                            key=f"edit_save_{tpl.id}",
+                            type="primary",
+                        ):
+                            try:
+                                templates_module.update_template(
+                                    tpl.id,
+                                    width_mm=ew,
+                                    height_mm=eh,
+                                    text_zone=new_text_zone,
+                                    text_style=new_text_style,
+                                    name_zone=new_name_zone,
+                                    name_style=new_name_style,
+                                )
+                                st.session_state.pop(edit_open_key, None)
+                                st.toast("Plantilla actualizada.")
+                                st.rerun()
+                            except Exception as e:  # noqa: BLE001
+                                st.error(f"No se pudo guardar: {e}")
+                    with act_cols[1]:
+                        if st.button("✋ Cancelar", key=f"edit_cancel_{tpl.id}"):
+                            st.session_state.pop(edit_open_key, None)
+                            st.rerun()

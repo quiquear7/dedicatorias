@@ -114,6 +114,52 @@ def rename_template(template_id: str, new_name: str) -> Template:
     return save_template(template)
 
 
+_UNSET = object()
+
+
+def update_template(
+    template_id: str,
+    *,
+    name: Optional[str] = None,
+    width_mm: Optional[float] = None,
+    height_mm: Optional[float] = None,
+    text_zone=_UNSET,
+    text_style=_UNSET,
+    name_zone=_UNSET,
+    name_style=_UNSET,
+) -> Template:
+    """Actualiza los campos editables de una plantilla. Cualquier argumento
+    omitido (o con valor centinela `_UNSET`) se deja sin tocar.
+
+    Para borrar la zona/estilo del nombre (que el destinatario ya no se dibuje),
+    pasa `name_zone=None` y `name_style=None` explícitamente.
+    """
+    template = get_template(template_id)
+    if not template:
+        raise KeyError(f"Plantilla no encontrada: {template_id}")
+    if name is not None:
+        if not name.strip():
+            raise ValueError("El nombre de la plantilla no puede estar vacío.")
+        template.name = name.strip()
+    if width_mm is not None:
+        template.width_mm = float(width_mm)
+    if height_mm is not None:
+        template.height_mm = float(height_mm)
+    if text_zone is not _UNSET:
+        if text_zone is None:
+            raise ValueError("La zona del texto es obligatoria.")
+        template.text_zone = text_zone
+    if text_style is not _UNSET:
+        if text_style is None:
+            raise ValueError("El estilo del texto es obligatorio.")
+        template.text_style = text_style
+    if name_zone is not _UNSET:
+        template.name_zone = name_zone
+    if name_style is not _UNSET:
+        template.name_style = name_style
+    return save_template(template)
+
+
 def set_template_back(
     template_id: str,
     back_bytes: bytes,

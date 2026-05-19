@@ -22,119 +22,175 @@ PREVIEW_DPI = 120
 
 # Lista de fuentes TrueType candidatas para Pillow (PNG).
 # Pillow soporta .ttc directamente; ReportLab no de forma fiable, así que las
-# fuentes que se usan para el PDF se manejan aparte en TTF_FONT_FAMILIES.
+# fuentes que se usan para el PDF se manejan aparte en FONT_LIBRARY.
 PILLOW_FONT_CANDIDATES = [
-    # macOS
     "/System/Library/Fonts/Supplemental/Helvetica.ttc",
     "/System/Library/Fonts/Helvetica.ttc",
-    "/System/Library/Fonts/Supplemental/Arial.ttf",
-    "/Library/Fonts/Arial.ttf",
-    # Linux (Streamlit Cloud)
     "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
     "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
     "/usr/share/fonts/TTF/DejaVuSans.ttf",
 ]
 
-# Familias TrueType candidatas para ReportLab (PDF) — con todas sus variantes.
-# Se intenta registrar la primera familia disponible y se cachea el resultado.
-TTF_FONT_FAMILIES: List[Tuple[str, Dict[str, str]]] = [
-    (
-        "DejaVuSans",
-        {
-            "regular": "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-            "bold": "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-            "italic": "/usr/share/fonts/truetype/dejavu/DejaVuSans-Oblique.ttf",
-            "bolditalic": "/usr/share/fonts/truetype/dejavu/DejaVuSans-BoldOblique.ttf",
-        },
-    ),
-    (
-        "LiberationSans",
-        {
-            "regular": "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
-            "bold": "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
-            "italic": "/usr/share/fonts/truetype/liberation/LiberationSans-Italic.ttf",
-            "bolditalic": "/usr/share/fonts/truetype/liberation/LiberationSans-BoldItalic.ttf",
-        },
-    ),
-    (
-        "Arial",
-        {
-            "regular": "/Library/Fonts/Arial.ttf",
-            "bold": "/Library/Fonts/Arial Bold.ttf",
-            "italic": "/Library/Fonts/Arial Italic.ttf",
-            "bolditalic": "/Library/Fonts/Arial Bold Italic.ttf",
-        },
-    ),
-]
+
+# Biblioteca de fuentes disponibles. Cada entrada es una familia con sus
+# variantes (regular/bold/italic/bolditalic). El nombre (clave) es el que ve
+# el usuario en el formulario y se guarda en TextStyle.font_family. Solo se
+# expondrán las familias para las que exista al menos la variante "regular".
+FONT_LIBRARY: Dict[str, Dict[str, str]] = {
+    "DejaVu Sans": {
+        "regular": "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "bold": "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        "italic": "/usr/share/fonts/truetype/dejavu/DejaVuSans-Oblique.ttf",
+        "bolditalic": "/usr/share/fonts/truetype/dejavu/DejaVuSans-BoldOblique.ttf",
+    },
+    "DejaVu Serif": {
+        "regular": "/usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf",
+        "bold": "/usr/share/fonts/truetype/dejavu/DejaVuSerif-Bold.ttf",
+        "italic": "/usr/share/fonts/truetype/dejavu/DejaVuSerif-Italic.ttf",
+        "bolditalic": "/usr/share/fonts/truetype/dejavu/DejaVuSerif-BoldItalic.ttf",
+    },
+    "Liberation Sans": {
+        "regular": "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+        "bold": "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+        "italic": "/usr/share/fonts/truetype/liberation/LiberationSans-Italic.ttf",
+        "bolditalic": "/usr/share/fonts/truetype/liberation/LiberationSans-BoldItalic.ttf",
+    },
+    "Liberation Serif": {
+        "regular": "/usr/share/fonts/truetype/liberation/LiberationSerif-Regular.ttf",
+        "bold": "/usr/share/fonts/truetype/liberation/LiberationSerif-Bold.ttf",
+        "italic": "/usr/share/fonts/truetype/liberation/LiberationSerif-Italic.ttf",
+        "bolditalic": "/usr/share/fonts/truetype/liberation/LiberationSerif-BoldItalic.ttf",
+    },
+    "Liberation Mono": {
+        "regular": "/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf",
+        "bold": "/usr/share/fonts/truetype/liberation/LiberationMono-Bold.ttf",
+        "italic": "/usr/share/fonts/truetype/liberation/LiberationMono-Italic.ttf",
+        "bolditalic": "/usr/share/fonts/truetype/liberation/LiberationMono-BoldItalic.ttf",
+    },
+}
 
 _REGISTERED_PDF_FONTS: set = set()
-_PDF_FAMILY_VARIANTS: Dict[str, str] = {}  # variant -> registered name (e.g. "bold" -> "DejaVuSans-Bold")
-_PDF_FAMILY_RESOLVED = False  # marcador para no reintentar registro en cada llamada
+# Map: display_name -> { variant_key -> registered_pdf_name }. Se rellena
+# perezosamente en _load_font_library() y se cachea.
+_FONT_LIBRARY_CACHE: Optional[Dict[str, Dict[str, str]]] = None
 
 
-def _bundled_font_families() -> List[Tuple[str, Dict[str, str]]]:
+def _bundled_font_families() -> Dict[str, Dict[str, str]]:
     """Familias TrueType bundleadas en `assets/fonts/`.
 
-    Si el usuario coloca un archivo `.ttf` en `assets/fonts/`, se intenta usar
-    como fallback (con la misma fuente para todas las variantes si no hay más).
-    Esto evita depender de las fuentes del sistema operativo.
+    Cada archivo `.ttf` se expone como una familia. Para tener variantes
+    (bold/italic/bolditalic) usa el sufijo en el nombre del fichero, p. ej.:
+    `MiFuente.ttf`, `MiFuente-Bold.ttf`, `MiFuente-Italic.ttf`,
+    `MiFuente-BoldItalic.ttf`. Si solo hay regular, ReportLab usa esa para
+    todas las variantes.
     """
     fonts_dir = Path(__file__).resolve().parent.parent / "assets" / "fonts"
     if not fonts_dir.is_dir():
-        return []
-    families: List[Tuple[str, Dict[str, str]]] = []
+        return {}
+    by_family: Dict[str, Dict[str, str]] = {}
     for ttf in sorted(fonts_dir.glob("*.ttf")):
-        family = ttf.stem
-        families.append(
-            (
-                family,
-                {
-                    "regular": str(ttf),
-                    # Si no hay variantes específicas, ReportLab usará la regular.
-                },
-            )
-        )
-    return families
+        stem = ttf.stem
+        variant = "regular"
+        family = stem
+        for suffix, key in (
+            ("-BoldItalic", "bolditalic"),
+            ("-BoldOblique", "bolditalic"),
+            ("-Bold", "bold"),
+            ("-Italic", "italic"),
+            ("-Oblique", "italic"),
+        ):
+            if stem.endswith(suffix):
+                variant = key
+                family = stem[: -len(suffix)]
+                break
+        family_display = family.replace("_", " ")
+        by_family.setdefault(family_display, {})[variant] = str(ttf)
+    return by_family
 
 
-def _try_register_pdf_family() -> Dict[str, str]:
-    """Registra la primera familia TrueType disponible en ReportLab y devuelve
-    el mapeo variante → nombre registrado. Devuelve dict vacío si no hay TTF.
+def _safe_pdf_name(label: str) -> str:
+    """Convierte un nombre legible en un id válido para registrar en ReportLab."""
+    return "".join(c for c in label if c.isalnum()) or "Font"
+
+
+def _load_font_library() -> Dict[str, Dict[str, str]]:
+    """Devuelve un dict `display_name -> {variant_key -> pdf_name_registrado}`
+    con todas las familias realmente disponibles en el sistema y en
+    `assets/fonts/`. Cachea el resultado tras la primera llamada.
     """
-    global _PDF_FAMILY_RESOLVED
-    if _PDF_FAMILY_RESOLVED:
-        return _PDF_FAMILY_VARIANTS
-    _PDF_FAMILY_RESOLVED = True
+    global _FONT_LIBRARY_CACHE
+    if _FONT_LIBRARY_CACHE is not None:
+        return _FONT_LIBRARY_CACHE
+    result: Dict[str, Dict[str, str]] = {}
 
-    # Primero las del sistema, luego las bundleadas en el repo como último recurso.
-    candidates = list(TTF_FONT_FAMILIES) + _bundled_font_families()
+    # Primero las del sistema (FONT_LIBRARY), luego las bundleadas.
+    candidates = list(FONT_LIBRARY.items()) + list(_bundled_font_families().items())
 
-    for family, variants in candidates:
-        regular_path = variants.get("regular") or ""
-        if not regular_path or not Path(regular_path).exists():
+    for display_name, variants in candidates:
+        registered = _try_register_family(display_name, variants)
+        if registered:
+            result[display_name] = registered
+
+    if not result:
+        logger.warning(
+            "No se encontró ninguna TTF para ReportLab; "
+            "los acentos podrían no renderizarse bien."
+        )
+    _FONT_LIBRARY_CACHE = result
+    return result
+
+
+def _try_register_family(display_name: str, variants: Dict[str, str]) -> Dict[str, str]:
+    """Registra cada variante existente de una familia y devuelve
+    {variant_key: pdf_name_registrado}. Solo devuelve algo si encuentra al
+    menos la variante "regular".
+    """
+    safe = _safe_pdf_name(display_name)
+    registered: Dict[str, str] = {}
+    for variant_key, path in variants.items():
+        if not path or not Path(path).exists():
             continue
-        registered: Dict[str, str] = {}
+        pdf_name = safe if variant_key == "regular" else f"{safe}-{variant_key.capitalize()}"
         try:
-            for variant_key, path in variants.items():
-                if not path or not Path(path).exists():
-                    continue
-                pdf_name = family if variant_key == "regular" else f"{family}-{variant_key.capitalize()}"
-                if pdf_name not in _REGISTERED_PDF_FONTS:
-                    pdfmetrics.registerFont(TTFont(pdf_name, path))
-                    _REGISTERED_PDF_FONTS.add(pdf_name)
-                registered[variant_key] = pdf_name
-            if "regular" in registered:
-                _PDF_FAMILY_VARIANTS.update(registered)
-                logger.info("PDF font family registrada: %s (%s variantes)", family, len(registered))
-                return _PDF_FAMILY_VARIANTS
+            if pdf_name not in _REGISTERED_PDF_FONTS:
+                pdfmetrics.registerFont(TTFont(pdf_name, path))
+                _REGISTERED_PDF_FONTS.add(pdf_name)
+            registered[variant_key] = pdf_name
         except Exception as exc:  # noqa: BLE001
-            logger.warning("No se pudo registrar la familia TTF %s: %s", family, exc)
+            logger.warning(
+                "No se pudo registrar variante %s de la familia %s (%s): %s",
+                variant_key,
+                display_name,
+                path,
+                exc,
+            )
             continue
-    logger.warning(
-        "No se encontró ninguna TTF para ReportLab; los acentos podrían no renderizarse bien."
-    )
-    return _PDF_FAMILY_VARIANTS
+    return registered if "regular" in registered else {}
+
+
+def list_available_fonts() -> List[str]:
+    """Familias de fuente disponibles para los formularios de plantilla."""
+    return list(_load_font_library().keys())
+
+
+def _ttf_path_for_style(style: TextStyle) -> Optional[str]:
+    """Ruta del archivo TTF a usar para esta combinación de familia+bold+italic.
+    Devuelve None si no hay TTF disponible (cae al default de Pillow / Helvetica).
+    """
+    family_dict = FONT_LIBRARY.get(style.font_family) or _bundled_font_families().get(style.font_family)
+    if not family_dict:
+        return None
+    variant_key = "regular"
+    if style.bold and style.italic:
+        variant_key = "bolditalic"
+    elif style.bold:
+        variant_key = "bold"
+    elif style.italic:
+        variant_key = "italic"
+    path = family_dict.get(variant_key) or family_dict.get("regular")
+    if path and Path(path).exists():
+        return path
+    return None
 
 
 def _hex_to_rgba(hex_color: str) -> Tuple[int, int, int, int]:
@@ -156,10 +212,18 @@ def mm_to_px(mm_value: float, dpi: int) -> int:
 
 def _load_pillow_font(style: TextStyle, dpi: int):
     size_px = max(int(round(style.font_size_pt * dpi / 72.0)), 6)
-    for path in PILLOW_FONT_CANDIDATES:
-        if Path(path).exists():
+    # Primero la fuente concreta de la familia pedida por el estilo.
+    path = _ttf_path_for_style(style)
+    if path:
+        try:
+            return ImageFont.truetype(path, size=size_px)
+        except OSError:
+            pass
+    # Si la familia no existe en este sistema, busca cualquier TTF disponible.
+    for fallback in PILLOW_FONT_CANDIDATES:
+        if Path(fallback).exists():
             try:
-                return ImageFont.truetype(path, size=size_px)
+                return ImageFont.truetype(fallback, size=size_px)
             except OSError:
                 continue
     logger.warning(
@@ -307,33 +371,32 @@ def render_png(
 
 
 def _ensure_pdf_font(style: TextStyle) -> str:
-    """Devuelve el nombre de la fuente a usar en ReportLab.
+    """Devuelve el nombre de la fuente registrada en ReportLab para este estilo.
 
-    Si hay alguna TrueType disponible (DejaVuSans, LiberationSans, Arial), la
-    registramos una vez y la usamos: tiene cobertura Unicode completa, así que
-    los acentos (`á é í ó ú ñ ¿ ¡`) se renderizan correctamente y la fuente
-    queda embebida en el PDF. Si no hay ninguna TTF en el sistema, caemos a la
-    Helvetica Type1 base (WinAnsi) — funciona en la mayoría de visores pero
-    puede tener glifos limitados.
+    Estrategia: elige la familia pedida por `style.font_family` si existe en
+    nuestra biblioteca; si no, usa la primera familia registrada; si no hay
+    ninguna TTF (entorno raro), cae a la Helvetica Type1 base.
     """
-    variants = _try_register_pdf_family()
-    if variants:
-        if style.bold and style.italic and "bolditalic" in variants:
-            return variants["bolditalic"]
-        if style.bold and "bold" in variants:
-            return variants["bold"]
-        if style.italic and "italic" in variants:
-            return variants["italic"]
-        return variants.get("regular") or variants[next(iter(variants))]
+    library = _load_font_library()
+    if not library:
+        bold_italic_map = {
+            (True, True): "Helvetica-BoldOblique",
+            (True, False): "Helvetica-Bold",
+            (False, True): "Helvetica-Oblique",
+            (False, False): "Helvetica",
+        }
+        return bold_italic_map.get((style.bold, style.italic), "Helvetica")
 
-    # Fallback: fuentes base Type1 de ReportLab (sin TTF disponible).
-    bold_italic_map = {
-        (True, True): "Helvetica-BoldOblique",
-        (True, False): "Helvetica-Bold",
-        (False, True): "Helvetica-Oblique",
-        (False, False): "Helvetica",
-    }
-    return bold_italic_map.get((style.bold, style.italic), "Helvetica")
+    family_label = style.font_family if style.font_family in library else next(iter(library))
+    variants = library[family_label]
+
+    if style.bold and style.italic and "bolditalic" in variants:
+        return variants["bolditalic"]
+    if style.bold and "bold" in variants:
+        return variants["bold"]
+    if style.italic and "italic" in variants:
+        return variants["italic"]
+    return variants.get("regular") or variants[next(iter(variants))]
 
 
 def _wrap_pdf(text: str, font_name: str, font_size: float, max_width_pt: float) -> List[str]:
