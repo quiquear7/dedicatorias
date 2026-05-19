@@ -4,12 +4,18 @@ import logging
 from typing import Iterable, List, Optional
 
 from core.ai_retry import ContentBlockedError, TransientAIError, with_retry
-from core.config import get_config, get_gemini_client, get_openai_client
+from core.config import (
+    get_config,
+    get_gemini_client,
+    get_groq_client,
+    get_openai_client,
+)
 
 logger = logging.getLogger(__name__)
 
 OPENAI_CORRECTION_MODEL = "gpt-4o-mini"
 GEMINI_CORRECTION_MODEL = "gemini-2.5-flash"
+GROQ_CORRECTION_MODEL = "llama-3.3-70b-versatile"
 
 SYSTEM_PROMPT = (
     "Eres un editor que corrige dedicatorias de tarjetas en español. "
@@ -95,21 +101,45 @@ def correct_dedication(raw_text: str) -> str:
     cfg = get_config()
     if cfg.ai_provider == "gemini":
         return with_retry(_correct_gemini, raw_text, on_retry=_on_retry_toast("Corrección IA"))
+    if cfg.ai_provider == "groq":
+        return with_retry(_correct_groq, raw_text, on_retry=_on_retry_toast("Corrección IA"))
     return with_retry(_correct_openai, raw_text, on_retry=_on_retry_toast("Corrección IA"))
 
 
-def _correct_openai(raw_text: str) -> str:
-    client = get_openai_client()
+def _chat_completion(client, model: str, system_prompt: str, user_message: str, temperature: float) -> str:
+    """Wrapper para clientes compatibles con la API de OpenAI (OpenAI y Groq)."""
     response = client.chat.completions.create(
-        model=OPENAI_CORRECTION_MODEL,
+        model=model,
         messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": raw_text.strip()},
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_message},
         ],
+        temperature=temperature,
+    )
+    text = (response.choices[0].message.content or "").strip()
+    if not text:
+        raise TransientAIError(f"{model}: respuesta vacía")
+    return text
+
+
+def _correct_openai(raw_text: str) -> str:
+    return _chat_completion(
+        get_openai_client(),
+        OPENAI_CORRECTION_MODEL,
+        SYSTEM_PROMPT,
+        raw_text.strip(),
         temperature=0.2,
     )
-    text = response.choices[0].message.content or ""
-    return text.strip()
+
+
+def _correct_groq(raw_text: str) -> str:
+    return _chat_completion(
+        get_groq_client(),
+        GROQ_CORRECTION_MODEL,
+        SYSTEM_PROMPT,
+        raw_text.strip(),
+        temperature=0.2,
+    )
 
 
 def _correct_gemini(raw_text: str) -> str:
@@ -165,20 +195,28 @@ def refine_text(current_text: str, instruction: str) -> str:
         return ""
 
     def _run_openai() -> str:
-        client = get_openai_client()
-        response = client.chat.completions.create(
-            model=OPENAI_CORRECTION_MODEL,
-            messages=[
-                {"role": "system", "content": REFINE_SYSTEM_PROMPT},
-                {"role": "user", "content": user_message},
-            ],
+        return _chat_completion(
+            get_openai_client(),
+            OPENAI_CORRECTION_MODEL,
+            REFINE_SYSTEM_PROMPT,
+            user_message,
             temperature=0.5,
         )
-        return (response.choices[0].message.content or "").strip()
+
+    def _run_groq() -> str:
+        return _chat_completion(
+            get_groq_client(),
+            GROQ_CORRECTION_MODEL,
+            REFINE_SYSTEM_PROMPT,
+            user_message,
+            temperature=0.5,
+        )
 
     callback = _on_retry_toast("Refinado IA")
     if cfg.ai_provider == "gemini":
         return with_retry(_run_gemini, on_retry=callback)
+    if cfg.ai_provider == "groq":
+        return with_retry(_run_groq, on_retry=callback)
     return with_retry(_run_openai, on_retry=callback)
 
 
@@ -216,20 +254,28 @@ def rewrite_fragment(fragment: str, instruction: str) -> str:
         return ""
 
     def _run_openai() -> str:
-        client = get_openai_client()
-        response = client.chat.completions.create(
-            model=OPENAI_CORRECTION_MODEL,
-            messages=[
-                {"role": "system", "content": REWRITE_FRAGMENT_SYSTEM_PROMPT},
-                {"role": "user", "content": user_message},
-            ],
+        return _chat_completion(
+            get_openai_client(),
+            OPENAI_CORRECTION_MODEL,
+            REWRITE_FRAGMENT_SYSTEM_PROMPT,
+            user_message,
             temperature=0.5,
         )
-        return (response.choices[0].message.content or "").strip()
+
+    def _run_groq() -> str:
+        return _chat_completion(
+            get_groq_client(),
+            GROQ_CORRECTION_MODEL,
+            REWRITE_FRAGMENT_SYSTEM_PROMPT,
+            user_message,
+            temperature=0.5,
+        )
 
     callback = _on_retry_toast("Reescritura de frase")
     if cfg.ai_provider == "gemini":
         return with_retry(_run_gemini, on_retry=callback)
+    if cfg.ai_provider == "groq":
+        return with_retry(_run_groq, on_retry=callback)
     return with_retry(_run_openai, on_retry=callback)
 
 

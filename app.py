@@ -28,6 +28,7 @@ _TX_LABELS = {
 _TEXT_LABELS = {
     "openai": ("OpenAI", "OPENAI_API_KEY", "gpt-4o-mini"),
     "gemini": ("Gemini", "GOOGLE_API_KEY", "gemini-2.5-flash"),
+    "groq": ("Groq", "GROQ_API_KEY", "llama-3.3-70b-versatile"),
 }
 
 st.subheader("Estado")

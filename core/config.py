@@ -54,6 +54,8 @@ class AppConfig:
             return bool(self.openai_api_key)
         if self.ai_provider == "gemini":
             return bool(self.google_api_key)
+        if self.ai_provider == "groq":
+            return bool(self.groq_api_key)
         return False
 
     @property
@@ -94,14 +96,21 @@ def get_config() -> AppConfig:
     openai_key = _get("OPENAI_API_KEY")
     groq_key = _get("GROQ_API_KEY")
     explicit_provider = (_get("AI_PROVIDER") or "").lower().strip()
-    if explicit_provider in {"openai", "gemini"}:
+    if explicit_provider in {"openai", "gemini", "groq"}:
         provider = explicit_provider
-    elif google_key and not openai_key:
+    elif groq_key and not openai_key and not google_key:
+        provider = "groq"
+    elif google_key and not openai_key and not groq_key:
         provider = "gemini"
-    elif openai_key and not google_key:
+    elif openai_key and not google_key and not groq_key:
         provider = "openai"
+    elif groq_key:
+        # Si hay varias claves y ninguna explícita: Groq gana por estabilidad gratis.
+        provider = "groq"
+    elif google_key:
+        provider = "gemini"
     else:
-        provider = "openai"  # ambos o ninguno: openai por defecto
+        provider = "openai"
 
     # Proveedor de transcripción de audio (puede ser distinto del de texto).
     # Prioridad: var explícita > Groq si hay key > el mismo proveedor de texto.
