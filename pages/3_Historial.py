@@ -39,9 +39,9 @@ def _build_bulk_zip(signature: tuple) -> tuple:
             used_names[base_slug] = used_names.get(base_slug, 0) + 1
             slug = base_slug if used_names[base_slug] == 1 else f"{base_slug}_{did[:8]}"
             for src_path, dst_name in (
-                (pdf_path, f"{slug}/dedicatoria_{slug}.pdf"),
-                (png_path, f"{slug}/dedicatoria_{slug}_frente.png"),
-                (back_path, f"{slug}/dedicatoria_{slug}_reverso.png"),
+                (pdf_path, f"dedicatoria_{slug}.pdf"),
+                (png_path, f"dedicatoria_{slug}_frente.png"),
+                (back_path, f"dedicatoria_{slug}_reverso.png"),
             ):
                 if not src_path:
                     continue
@@ -394,7 +394,7 @@ with tab_rendered:
                                     ok += 1
                             except Exception:
                                 pass
-                            st.session_state[f"sel_{d.id}"] = False
+                            st.session_state.pop(f"sel_{d.id}", None)
                         st.session_state.pop("_hist_bulk_confirm_unrender", None)
                         st.toast(f"{ok} dedicatoria(s) movidas a pendientes.")
                         st.rerun()

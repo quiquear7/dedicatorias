@@ -6,7 +6,6 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 from PIL import Image, ImageDraw, ImageFont
-from reportlab.lib.colors import HexColor
 from reportlab.lib.units import mm
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
@@ -433,96 +432,6 @@ def render_png(
     return buffer.getvalue(), warnings
 
 
-def _ensure_pdf_font(style: TextStyle) -> str:
-    """Devuelve el nombre de la fuente registrada en ReportLab para este estilo.
-
-    Estrategia: elige la familia pedida por `style.font_family` si existe en
-    nuestra biblioteca; si no, usa la primera familia registrada; si no hay
-    ninguna TTF (entorno raro), cae a la Helvetica Type1 base.
-    """
-    library = _load_font_library()
-    if not library:
-        bold_italic_map = {
-            (True, True): "Helvetica-BoldOblique",
-            (True, False): "Helvetica-Bold",
-            (False, True): "Helvetica-Oblique",
-            (False, False): "Helvetica",
-        }
-        return bold_italic_map.get((style.bold, style.italic), "Helvetica")
-
-    family_label = style.font_family if style.font_family in library else next(iter(library))
-    variants = library[family_label]
-
-    if style.bold and style.italic and "bolditalic" in variants:
-        return variants["bolditalic"]
-    if style.bold and "bold" in variants:
-        return variants["bold"]
-    if style.italic and "italic" in variants:
-        return variants["italic"]
-    return variants.get("regular") or variants[next(iter(variants))]
-
-
-def _wrap_pdf(text: str, font_name: str, font_size: float, max_width_pt: float) -> List[str]:
-    lines: List[str] = []
-    for paragraph in text.split("\n"):
-        if not paragraph.strip():
-            lines.append("")
-            continue
-        words = paragraph.split(" ")
-        current = ""
-        for word in words:
-            candidate = (current + " " + word).strip()
-            if pdfmetrics.stringWidth(candidate, font_name, font_size) <= max_width_pt or not current:
-                current = candidate
-            else:
-                lines.append(current)
-                current = word
-        if current:
-            lines.append(current)
-    return lines
-
-
-def _draw_text_pdf(
-    c: rl_canvas.Canvas,
-    text: str,
-    zone: Zone,
-    style: TextStyle,
-    page_height_pt: float,
-) -> bool:
-    if not text:
-        return True
-    font_name = _ensure_pdf_font(style)
-    c.setFillColor(HexColor(style.color_hex))
-    c.setFont(font_name, style.font_size_pt)
-
-    zone_x_pt = zone.x_mm * mm
-    zone_w_pt = zone.width_mm * mm
-    zone_h_pt = zone.height_mm * mm
-    zone_top_pt = page_height_pt - (zone.y_mm * mm)
-
-    line_height_pt = style.font_size_pt * style.line_height
-    lines = _wrap_pdf(text, font_name, style.font_size_pt, zone_w_pt)
-    max_lines = max(1, int(zone_h_pt // max(line_height_pt, 1)))
-    fits = len(lines) <= max_lines
-    visible = lines[:max_lines]
-
-    total_height = line_height_pt * len(visible)
-    y_top = zone_top_pt - max(0, (zone_h_pt - total_height) / 2)
-    ascent_offset = style.font_size_pt * 0.8
-
-    for idx, line in enumerate(visible):
-        line_width = pdfmetrics.stringWidth(line, font_name, style.font_size_pt)
-        if style.align == "left":
-            x = zone_x_pt
-        elif style.align == "right":
-            x = zone_x_pt + zone_w_pt - line_width
-        else:
-            x = zone_x_pt + (zone_w_pt - line_width) / 2
-        y = y_top - ascent_offset - idx * line_height_pt
-        c.drawString(x, y, line)
-    return fits
-
-
 def render_pdf(
     template: Template,
     recipient: str,
@@ -531,23 +440,23 @@ def render_pdf(
     dpi: int = DEFAULT_DPI,
     include_back: bool = True,
 ) -> Tuple[bytes, dict]:
-    """Genera un PDF con el frente (texto). Si la plantilla tiene reverso e
-    `include_back=True`, añade una segunda página con esa imagen.
+    """Genera un PDF con el frente y, opcionalmente, el reverso.
+
+    El frente se embebe a partir del PNG renderizado por Pillow para garantizar
+    que PDF y PNG sean visualmente idénticos (mismo motor de texto).
     """
+    from reportlab.lib.utils import ImageReader
+
     page_w_pt = template.width_mm * mm
     page_h_pt = template.height_mm * mm
 
+    front_png_bytes, warnings = render_png(template, recipient, dedication, dpi=dpi)
+
     out = io.BytesIO()
     c = rl_canvas.Canvas(out, pagesize=(page_w_pt, page_h_pt))
-    from reportlab.lib.utils import ImageReader
 
-    # ---- Página 1: frente ----
-    background = _load_background_image(template, dpi)
-    bg_buffer = io.BytesIO()
-    background.convert("RGB").save(bg_buffer, format="PNG", optimize=True)
-    bg_buffer.seek(0)
     c.drawImage(
-        ImageReader(bg_buffer),
+        ImageReader(io.BytesIO(front_png_bytes)),
         0,
         0,
         width=page_w_pt,
@@ -555,17 +464,8 @@ def render_pdf(
         preserveAspectRatio=False,
         mask="auto",
     )
-
-    warnings: dict = {}
-    if template.name_zone and template.name_style and recipient:
-        effective_name_zone = _resolve_name_zone(template, dedication, dpi)
-        if not _draw_text_pdf(c, recipient, effective_name_zone, template.name_style, page_h_pt):
-            warnings["name_overflow"] = True
-    if not _draw_text_pdf(c, dedication, template.text_zone, template.text_style, page_h_pt):
-        warnings["text_overflow"] = True
     c.showPage()
 
-    # ---- Página 2: reverso (si existe y el caller lo quiere) ----
     back_image = _load_back_image(template, dpi) if include_back else None
     if back_image is not None:
         back_buf = io.BytesIO()

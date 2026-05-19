@@ -991,13 +991,20 @@ elif step == 5:
         st.divider()
         st.markdown("**📦 Descargar todo en un ZIP**")
         zip_buf = io.BytesIO()
+        used_names: Dict[str, int] = {}
         with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
             for it in rendered_items:
-                s = _safe_filename(it["recipient_name"])
-                zf.writestr(f"{s}/dedicatoria_{s}.pdf", it["pdf"])
-                zf.writestr(f"{s}/dedicatoria_{s}_frente.png", it["png"])
+                base_slug = _safe_filename(it["recipient_name"])
+                used_names[base_slug] = used_names.get(base_slug, 0) + 1
+                s = (
+                    base_slug
+                    if used_names[base_slug] == 1
+                    else f"{base_slug}_{it['dedication_id'][:8]}"
+                )
+                zf.writestr(f"dedicatoria_{s}.pdf", it["pdf"])
+                zf.writestr(f"dedicatoria_{s}_frente.png", it["png"])
                 if it["back_png"]:
-                    zf.writestr(f"{s}/dedicatoria_{s}_reverso.png", it["back_png"])
+                    zf.writestr(f"dedicatoria_{s}_reverso.png", it["back_png"])
         st.download_button(
             f"⬇️ ZIP con las {len(rendered_items)} tarjetas (PDF + PNG)",
             data=zip_buf.getvalue(),
