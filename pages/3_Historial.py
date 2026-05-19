@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import io
+import zipfile
 from datetime import datetime
 
 import streamlit as st
@@ -9,6 +11,11 @@ from core import templates as templates_module
 from core.auth import logout_button, require_login
 from core.config import get_config, get_storage
 from core.rendering import render_preview
+
+
+def _safe_filename(name: str) -> str:
+    cleaned = (name or "").replace("/", "_").replace("\\", "_").strip()
+    return cleaned.replace(" ", "_") or "tarjeta"
 
 st.set_page_config(page_title="Historial", page_icon="📜", layout="wide")
 require_login()
@@ -234,14 +241,187 @@ with tab_rendered:
             return True
 
         filtered = [d for d in rendered_list if _matches(d)]
-        st.markdown(f"**{len(filtered)}** de {len(rendered_list)} dedicatorias")
+
+        # ----- Acciones masivas -----
+        with st.container(border=True):
+            st.markdown(
+                f"**{len(filtered)}** de {len(rendered_list)} dedicatorias visibles."
+            )
+            selected = [
+                d for d in filtered if st.session_state.get(f"sel_{d.id}", False)
+            ]
+            sel_count = len(selected)
+
+            sel_cols = st.columns([1, 1, 1, 1, 1])
+            with sel_cols[0]:
+                if st.button(
+                    f"☑️ Marcar todas ({len(filtered)})",
+                    key="hist_sel_all",
+                    disabled=not filtered,
+                    use_container_width=True,
+                ):
+                    for d in filtered:
+                        st.session_state[f"sel_{d.id}"] = True
+                    st.rerun()
+            with sel_cols[1]:
+                if st.button(
+                    "⬜ Limpiar selección",
+                    key="hist_sel_clear",
+                    disabled=sel_count == 0,
+                    use_container_width=True,
+                ):
+                    for d in filtered:
+                        st.session_state[f"sel_{d.id}"] = False
+                    st.rerun()
+            with sel_cols[2]:
+                if st.button(
+                    f"📦 Descargar ZIP ({sel_count})",
+                    key="hist_bulk_zip",
+                    disabled=sel_count == 0,
+                    type="primary" if sel_count else "secondary",
+                    use_container_width=True,
+                ):
+                    st.session_state["_hist_bulk_build_zip"] = True
+                    st.rerun()
+            with sel_cols[3]:
+                if st.button(
+                    f"🔄 A pendientes ({sel_count})",
+                    key="hist_bulk_unrender",
+                    disabled=sel_count == 0,
+                    use_container_width=True,
+                    help=(
+                        "Mueve las tarjetas seleccionadas a «Pendientes»: borra el "
+                        "PDF/PNG renderizado pero conserva el texto para re-renderizar."
+                    ),
+                ):
+                    st.session_state["_hist_bulk_confirm_unrender"] = True
+                    st.rerun()
+            with sel_cols[4]:
+                if st.button(
+                    f"🗑️ Borrar ({sel_count})",
+                    key="hist_bulk_delete",
+                    disabled=sel_count == 0,
+                    use_container_width=True,
+                ):
+                    st.session_state["_hist_bulk_confirm_delete"] = True
+                    st.rerun()
+
+            # Construir y servir ZIP (un único paso: el download_button aparece con
+            # los datos listos sin necesidad de un segundo click extra)
+            if st.session_state.get("_hist_bulk_build_zip") and selected:
+                zip_buf = io.BytesIO()
+                missing = 0
+                with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
+                    used_names: dict = {}
+                    for d in selected:
+                        base_slug = _safe_filename(d.recipient_name)
+                        # Evita colisiones cuando hay nombres repetidos.
+                        used_names[base_slug] = used_names.get(base_slug, 0) + 1
+                        if used_names[base_slug] > 1:
+                            slug = f"{base_slug}_{d.id[:8]}"
+                        else:
+                            slug = base_slug
+                        for src_path, dst_name, _label in (
+                            (d.card_pdf_path, f"{slug}/dedicatoria_{slug}.pdf", "pdf"),
+                            (d.card_png_path, f"{slug}/dedicatoria_{slug}_frente.png", "frente"),
+                            (d.card_back_png_path, f"{slug}/dedicatoria_{slug}_reverso.png", "reverso"),
+                        ):
+                            if not src_path:
+                                continue
+                            try:
+                                zf.writestr(dst_name, storage.get(src_path))
+                            except Exception:  # noqa: BLE001
+                                missing += 1
+                st.download_button(
+                    f"⬇️ Descargar ZIP con {sel_count} dedicatorias",
+                    data=zip_buf.getvalue(),
+                    file_name="dedicatorias.zip",
+                    mime="application/zip",
+                    key="hist_zip_download",
+                    use_container_width=True,
+                    on_click=lambda: st.session_state.pop("_hist_bulk_build_zip", None),
+                )
+                if missing:
+                    st.caption(
+                        f"⚠️ {missing} archivo(s) no se han podido añadir al ZIP "
+                        "(rutas faltantes en el almacenamiento)."
+                    )
+
+            # Confirmación: mover a pendientes
+            if st.session_state.get("_hist_bulk_confirm_unrender") and selected:
+                st.warning(
+                    f"Vas a mover **{sel_count} tarjeta(s) renderizada(s)** a «Pendientes»: "
+                    "se borrarán sus archivos PDF/PNG, pero el texto y los datos del "
+                    "destinatario se conservan en el historial."
+                )
+                cc = st.columns([1, 1, 4])
+                with cc[0]:
+                    if st.button(
+                        "🔄 Sí, mover a pendientes",
+                        key="hist_bulk_unrender_yes",
+                        type="primary",
+                    ):
+                        ok = 0
+                        for d in selected:
+                            try:
+                                if history_module.unrender_dedication(d.id):
+                                    ok += 1
+                            except Exception:
+                                pass
+                            st.session_state[f"sel_{d.id}"] = False
+                        st.session_state.pop("_hist_bulk_confirm_unrender", None)
+                        st.toast(f"{ok} dedicatoria(s) movidas a pendientes.")
+                        st.rerun()
+                with cc[1]:
+                    if st.button("✋ Cancelar", key="hist_bulk_unrender_cancel"):
+                        st.session_state.pop("_hist_bulk_confirm_unrender", None)
+                        st.rerun()
+
+            # Confirmación: borrar
+            if st.session_state.get("_hist_bulk_confirm_delete") and selected:
+                st.error(
+                    f"Vas a **borrar {sel_count} dedicatoria(s)** del historial. "
+                    "Esto elimina texto, audio y tarjetas. Esta acción **no se puede deshacer**."
+                )
+                cc = st.columns([1, 1, 4])
+                with cc[0]:
+                    if st.button(
+                        "🗑️ Sí, borrar todas",
+                        key="hist_bulk_delete_yes",
+                        type="primary",
+                    ):
+                        ok = 0
+                        for d in selected:
+                            try:
+                                if history_module.delete_dedication(d.id):
+                                    ok += 1
+                            except Exception:
+                                pass
+                            st.session_state.pop(f"sel_{d.id}", None)
+                        st.session_state.pop("_hist_bulk_confirm_delete", None)
+                        st.toast(f"{ok} dedicatoria(s) eliminadas.")
+                        st.rerun()
+                with cc[1]:
+                    if st.button("✋ Cancelar", key="hist_bulk_delete_cancel"):
+                        st.session_state.pop("_hist_bulk_confirm_delete", None)
+                        st.rerun()
 
         for d in filtered:
             tpl = template_index.get(d.template_id) if d.template_id else None
             tpl_name = tpl.name if tpl else (d.template_snapshot or {}).get("name", "(plantilla eliminada)")
             badge = " 🔁" if d.is_generic else ""
             title = f"{d.recipient_name} · {d.recipient_group or '(sin grupo)'} · {tpl_name}{badge}"
-            with st.expander(f"{d.created_at[:10]} · {title}"):
+            row = st.columns([1, 30])
+            with row[0]:
+                st.checkbox(
+                    " ",
+                    key=f"sel_{d.id}",
+                    label_visibility="collapsed",
+                    help="Marcar para acciones masivas (descargar ZIP, mover a pendientes, borrar).",
+                )
+            with row[1]:
+                expander = st.expander(f"{d.created_at[:10]} · {title}")
+            with expander:
                 cols = st.columns([3, 4])
                 with cols[0]:
                     if d.card_back_png_path:
