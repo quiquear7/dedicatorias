@@ -149,6 +149,8 @@ def _preview_with_zones(
     text_style: TextStyle,
     name_zone: Optional[Zone],
     name_style: Optional[TextStyle],
+    name_follows_text: bool = False,
+    name_gap_mm: float = 3.0,
     sample_name: str = "Nombre destinatario",
     sample_text: str = "Ejemplo de dedicatoria. Lorem ipsum dolor sit amet, consectetur adipiscing elit.",
 ) -> bytes:
@@ -156,8 +158,10 @@ def _preview_with_zones(
     - El diseño de fondo
     - El texto de muestra en sus zonas
     - Un recuadro magenta sobre cada zona, para que el usuario vea dónde caen
+    - Si `name_follows_text` está activo, recoloca el nombre justo encima del
+      texto (igual que hace el renderer real)
     """
-    from core.rendering import _draw_text_pillow, mm_to_px
+    from core.rendering import _draw_text_pillow, compute_text_top_mm, mm_to_px
     from PIL import Image, ImageDraw
 
     if source_type == "pdf":
@@ -176,12 +180,23 @@ def _preview_with_zones(
     if bg.size != (target_w, target_h):
         bg = bg.resize((target_w, target_h), Image.LANCZOS)
 
-    if name_zone and name_style:
-        _draw_text_pillow(bg, sample_name, name_zone, name_style, PREVIEW_DPI)
+    effective_name_zone: Optional[Zone] = name_zone
+    if name_zone and name_style and name_follows_text:
+        text_top_mm = compute_text_top_mm(sample_text, text_zone, text_style, PREVIEW_DPI)
+        new_y = max(0.0, text_top_mm - name_zone.height_mm - max(0.0, name_gap_mm))
+        effective_name_zone = Zone(
+            x_mm=name_zone.x_mm,
+            y_mm=new_y,
+            width_mm=name_zone.width_mm,
+            height_mm=name_zone.height_mm,
+        )
+
+    if effective_name_zone and name_style:
+        _draw_text_pillow(bg, sample_name, effective_name_zone, name_style, PREVIEW_DPI)
     _draw_text_pillow(bg, sample_text, text_zone, text_style, PREVIEW_DPI)
 
     draw = ImageDraw.Draw(bg)
-    for zone in [z for z in [text_zone, name_zone] if z is not None]:
+    for zone in [z for z in [text_zone, effective_name_zone] if z is not None]:
         x0 = mm_to_px(zone.x_mm, PREVIEW_DPI)
         y0 = mm_to_px(zone.y_mm, PREVIEW_DPI)
         x1 = x0 + mm_to_px(zone.width_mm, PREVIEW_DPI)
@@ -225,11 +240,38 @@ with tab_create:
         use_name_zone = st.checkbox("Añadir zona separada para el nombre del destinatario", value=False, key="tpl_use_name_zone")
         name_zone: Optional[Zone] = None
         name_style: Optional[TextStyle] = None
+        name_follows_text = False
+        name_gap_mm = 3.0
         if use_name_zone:
             st.markdown("**Zona del nombre**")
             name_zone_default = Zone(x_mm=10.0, y_mm=10.0, width_mm=width_mm - 20.0, height_mm=12.0)
             name_zone = _zone_form("nz", name_zone_default, width_mm, height_mm)
             name_style = _style_form("ns", TextStyle(font_size_pt=18.0, align="center", bold=True))
+
+            fcols = st.columns([2, 1])
+            with fcols[0]:
+                name_follows_text = st.checkbox(
+                    "📌 Posicionar el nombre justo encima del texto",
+                    value=False,
+                    key="tpl_name_follows",
+                    help=(
+                        "Si lo activas, el nombre se dibuja siempre pegado a donde "
+                        "arranque la dedicatoria (que cambia según su longitud al "
+                        "centrarse vertical en su zona). La Y de la zona del nombre "
+                        "se ignora; X/Ancho/Alto sí se respetan."
+                    ),
+                )
+            with fcols[1]:
+                if name_follows_text:
+                    name_gap_mm = st.number_input(
+                        "Separación (mm)",
+                        min_value=0.0,
+                        max_value=50.0,
+                        value=3.0,
+                        step=0.5,
+                        key="tpl_name_gap",
+                        help="Distancia vertical entre el bloque del nombre y la primera línea del texto.",
+                    )
 
     with right:
         st.markdown("**Vista previa**")
@@ -246,6 +288,8 @@ with tab_create:
                     text_style=text_style,
                     name_zone=name_zone,
                     name_style=name_style,
+                    name_follows_text=name_follows_text,
+                    name_gap_mm=name_gap_mm,
                 )
                 st.image(preview_bytes, use_container_width=True)
                 st.caption("El recuadro magenta indica la zona definida (sólo visible en el preview).")
@@ -292,6 +336,8 @@ with tab_create:
                 text_style=text_style,
                 name_zone=name_zone,
                 name_style=name_style,
+                name_follows_text=name_follows_text,
+                name_gap_mm=name_gap_mm,
                 **back_kwargs,
             )
             st.success(f"Plantilla «{name}» guardada.")
@@ -481,6 +527,8 @@ with tab_list:
                         )
                         new_name_zone = None
                         new_name_style = None
+                        new_name_follows = False
+                        new_name_gap = float(tpl.name_gap_mm)
                         if keep_name_zone:
                             st.markdown("**🆎 Zona y estilo del NOMBRE del destinatario** (título)")
                             default_name_zone = tpl.name_zone or Zone(
@@ -493,6 +541,29 @@ with tab_list:
                                 f"edit_nz_{tpl.id}", default_name_zone, ew, eh
                             )
                             new_name_style = _style_form(f"edit_ns_{tpl.id}", default_name_style)
+
+                            edit_follow_cols = st.columns([2, 1])
+                            with edit_follow_cols[0]:
+                                new_name_follows = st.checkbox(
+                                    "📌 Posicionar el nombre justo encima del texto",
+                                    value=bool(tpl.name_follows_text),
+                                    key=f"edit_follow_{tpl.id}",
+                                    help=(
+                                        "El nombre se dibuja siempre pegado a donde arranque la "
+                                        "dedicatoria (cambia según su longitud al centrarse vertical "
+                                        "en su zona). La Y de la zona del nombre se ignora."
+                                    ),
+                                )
+                            with edit_follow_cols[1]:
+                                if new_name_follows:
+                                    new_name_gap = st.number_input(
+                                        "Separación (mm)",
+                                        min_value=0.0,
+                                        max_value=50.0,
+                                        value=float(tpl.name_gap_mm),
+                                        step=0.5,
+                                        key=f"edit_gap_{tpl.id}",
+                                    )
 
                     with edit_right:
                         st.markdown("**👁️ Vista previa**")
@@ -507,6 +578,8 @@ with tab_list:
                                 text_style=new_text_style,
                                 name_zone=new_name_zone,
                                 name_style=new_name_style,
+                                name_follows_text=new_name_follows,
+                                name_gap_mm=new_name_gap,
                             )
                             st.image(preview_bytes, use_container_width=True)
                             st.caption(
@@ -534,6 +607,8 @@ with tab_list:
                                     text_style=new_text_style,
                                     name_zone=new_name_zone,
                                     name_style=new_name_style,
+                                    name_follows_text=new_name_follows,
+                                    name_gap_mm=new_name_gap,
                                 )
                                 st.session_state.pop(edit_open_key, None)
                                 st.toast("Plantilla actualizada.")

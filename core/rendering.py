@@ -270,6 +270,54 @@ def _measure_pillow_line_height(font: ImageFont.ImageFont, multiplier: float) ->
     return (ascent + descent) * multiplier
 
 
+def compute_text_top_mm(text: str, zone: Zone, style: TextStyle, dpi: int = DEFAULT_DPI) -> float:
+    """Devuelve la coordenada Y (en mm) donde realmente arrancará el texto al
+    dibujarlo en `zone` con `style`. Pillow centra verticalmente el bloque de
+    líneas dentro de la zona, así que la Y de inicio depende del nº de líneas.
+    """
+    if not text:
+        return zone.y_mm + zone.height_mm / 2  # zona vacía: centro
+    font = _load_pillow_font(style, dpi)
+    zone_w_px = mm_to_px(zone.width_mm, dpi)
+    zone_h_px = mm_to_px(zone.height_mm, dpi)
+    lines = _wrap_pillow(text, font, zone_w_px)
+    line_height_px = _measure_pillow_line_height(font, style.line_height)
+    max_lines = max(1, int(zone_h_px // max(line_height_px, 1)))
+    visible = lines[:max_lines]
+    total_height_px = line_height_px * len(visible)
+    y_start_px = mm_to_px(zone.y_mm, dpi) + max(0, (zone_h_px - total_height_px) / 2)
+    # px → mm
+    return y_start_px * 25.4 / dpi
+
+
+def _resolve_name_zone(
+    template: Template, dedication_text: str, dpi: int = DEFAULT_DPI
+) -> Optional[Zone]:
+    """Si la plantilla está configurada para que el nombre siga al texto,
+    devuelve una `Zone` con la Y recalculada para quedar justo encima de donde
+    arranca la dedicatoria. En otro caso (o si no hay name_zone), devuelve la
+    name_zone tal cual.
+    """
+    if not template.name_zone:
+        return None
+    if not template.name_follows_text or not template.text_style:
+        return template.name_zone
+
+    text_top_mm = compute_text_top_mm(
+        dedication_text, template.text_zone, template.text_style, dpi
+    )
+    gap = max(0.0, template.name_gap_mm)
+    new_y = text_top_mm - template.name_zone.height_mm - gap
+    # Evita salirse por arriba: clamp a 0 si saldría fuera de la tarjeta.
+    new_y = max(0.0, new_y)
+    return Zone(
+        x_mm=template.name_zone.x_mm,
+        y_mm=new_y,
+        width_mm=template.name_zone.width_mm,
+        height_mm=template.name_zone.height_mm,
+    )
+
+
 def _draw_text_pillow(
     image: Image.Image,
     text: str,
@@ -369,7 +417,10 @@ def render_png(
     warnings: dict = {}
 
     if template.name_zone and template.name_style and recipient:
-        fits_name = _draw_text_pillow(image, recipient, template.name_zone, template.name_style, dpi)
+        effective_name_zone = _resolve_name_zone(template, dedication, dpi)
+        fits_name = _draw_text_pillow(
+            image, recipient, effective_name_zone, template.name_style, dpi
+        )
         if not fits_name:
             warnings["name_overflow"] = True
 
@@ -504,7 +555,8 @@ def render_pdf(
 
     warnings: dict = {}
     if template.name_zone and template.name_style and recipient:
-        if not _draw_text_pdf(c, recipient, template.name_zone, template.name_style, page_h_pt):
+        effective_name_zone = _resolve_name_zone(template, dedication, dpi)
+        if not _draw_text_pdf(c, recipient, effective_name_zone, template.name_style, page_h_pt):
             warnings["name_overflow"] = True
     if not _draw_text_pdf(c, dedication, template.text_zone, template.text_style, page_h_pt):
         warnings["text_overflow"] = True

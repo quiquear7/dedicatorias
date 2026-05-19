@@ -60,6 +60,8 @@ def create_template(
     text_style,
     name_zone=None,
     name_style=None,
+    name_follows_text: bool = False,
+    name_gap_mm: float = 3.0,
     back_bytes: Optional[bytes] = None,
     back_extension: Optional[str] = None,
     back_type: Optional[str] = None,
@@ -88,6 +90,8 @@ def create_template(
         text_style=text_style,
         name_zone=name_zone,
         name_style=name_style,
+        name_follows_text=bool(name_follows_text),
+        name_gap_mm=float(name_gap_mm),
         back_source_path=back_source_path,
         back_source_type=back_source_type,  # type: ignore[arg-type]
     )
@@ -127,6 +131,8 @@ def update_template(
     text_style=_UNSET,
     name_zone=_UNSET,
     name_style=_UNSET,
+    name_follows_text: Optional[bool] = None,
+    name_gap_mm: Optional[float] = None,
 ) -> Template:
     """Actualiza los campos editables de una plantilla. Cualquier argumento
     omitido (o con valor centinela `_UNSET`) se deja sin tocar.
@@ -157,6 +163,10 @@ def update_template(
         template.name_zone = name_zone
     if name_style is not _UNSET:
         template.name_style = name_style
+    if name_follows_text is not None:
+        template.name_follows_text = bool(name_follows_text)
+    if name_gap_mm is not None:
+        template.name_gap_mm = float(name_gap_mm)
     return save_template(template)
 
 

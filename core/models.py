@@ -67,6 +67,13 @@ class Template:
     text_style: TextStyle
     name_zone: Optional[Zone] = None
     name_style: Optional[TextStyle] = None
+    # Si True, el nombre se dibuja relativo a donde empieza el texto (útil
+    # cuando la dedicatoria está centrada verticalmente y arranca a distinta
+    # altura según su longitud).
+    name_follows_text: bool = False
+    # Separación en mm entre la base del bloque del nombre y la parte superior
+    # del texto cuando name_follows_text está activo.
+    name_gap_mm: float = 3.0
     back_source_path: Optional[str] = None
     back_source_type: Optional[Literal["image", "pdf"]] = None
     created_at: str = field(default_factory=now_iso)
@@ -87,6 +94,8 @@ class Template:
             "text_style": self.text_style.to_dict(),
             "name_zone": self.name_zone.to_dict() if self.name_zone else None,
             "name_style": self.name_style.to_dict() if self.name_style else None,
+            "name_follows_text": self.name_follows_text,
+            "name_gap_mm": self.name_gap_mm,
             "back_source_path": self.back_source_path,
             "back_source_type": self.back_source_type,
             "created_at": self.created_at,
@@ -105,6 +114,8 @@ class Template:
             text_style=TextStyle.from_dict(data["text_style"]),
             name_zone=Zone.from_dict(data["name_zone"]) if data.get("name_zone") else None,
             name_style=TextStyle.from_dict(data["name_style"]) if data.get("name_style") else None,
+            name_follows_text=bool(data.get("name_follows_text", False)),
+            name_gap_mm=float(data.get("name_gap_mm", 3.0)),
             back_source_path=data.get("back_source_path"),
             back_source_type=data.get("back_source_type"),
             created_at=data.get("created_at", now_iso()),
