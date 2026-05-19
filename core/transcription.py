@@ -2,10 +2,23 @@ from __future__ import annotations
 
 import io
 
+from core.ai_retry import with_retry
 from core.config import get_config, get_gemini_client, get_openai_client
 
 
 GEMINI_AUDIO_MODEL = "gemini-2.5-flash"
+
+
+def _on_retry_toast_transcribe(attempt: int, exc: BaseException, delay: float) -> None:  # noqa: ARG001
+    try:
+        import streamlit as st
+
+        st.toast(
+            f"⏳ Transcripción: la IA está saturada, reintentando en {delay:.1f}s "
+            f"(intento {attempt})…"
+        )
+    except Exception:  # noqa: BLE001
+        pass
 
 _TRANSCRIPTION_PROMPT = (
     "Transcribe el siguiente audio en español. "
@@ -19,8 +32,16 @@ def transcribe(audio_bytes: bytes, *, language: str = "es", filename: str = "aud
         raise ValueError("audio_bytes está vacío.")
     cfg = get_config()
     if cfg.ai_provider == "gemini":
-        return _transcribe_gemini(audio_bytes, filename)
-    return _transcribe_openai(audio_bytes, language, filename)
+        return with_retry(
+            _transcribe_gemini, audio_bytes, filename, on_retry=_on_retry_toast_transcribe
+        )
+    return with_retry(
+        _transcribe_openai,
+        audio_bytes,
+        language,
+        filename,
+        on_retry=_on_retry_toast_transcribe,
+    )
 
 
 def _transcribe_openai(audio_bytes: bytes, language: str, filename: str) -> str:

@@ -1,16 +1,25 @@
 from __future__ import annotations
 
-from typing import Optional
+import io
+import zipfile
+from typing import Dict, List, Optional
 
 import streamlit as st
 
 from core import contacts as contacts_module
 from core import history as history_module
 from core import templates as templates_module
+from core.ai_retry import friendly_ai_error
 from core.audio_recorder import audio_recorder
 from core.auth import logout_button, require_login
 from core.config import get_config
-from core.correction import correct_dedication, refine_text
+from core.correction import (
+    correct_dedication,
+    join_sentences,
+    refine_text,
+    rewrite_fragment,
+    split_into_sentences,
+)
 from core.diff import html_diff
 from core.models import Contact, Template
 from core.rendering import render_back_png, render_pdf, render_png, render_preview
@@ -31,6 +40,7 @@ DEFAULT_STATE = {
     "contact_id": None,
     "recipient_name": "",
     "recipient_group": "",
+    "recipients": [],  # lista de dicts {name, group, contact_id} cuando hay varios destinatarios
     "input_mode": "audio",
     "raw_input": "",
     "corrected_text": "",
@@ -40,13 +50,16 @@ DEFAULT_STATE = {
     "selected_template_id": None,
     "is_generic": False,
     "saved_dedication_id": None,
+    "saved_dedication_ids": [],  # cuando se generan varias tarjetas
     "saved_as_pending": False,
     "loaded_duplicate_from": None,
     "_pdf_bytes": None,
     "_png_bytes": None,
     "_back_png_bytes": None,
+    "_rendered_items": [],  # [{recipient, dedication_id, pdf, png, back_png}]
     "versions": [],  # lista de dicts {label, text}
     "final_text_rev": 0,  # se incrementa para forzar refresco del text_area cuando la IA reescribe
+    "sentences_rev": 0,  # se incrementa para resetear checkboxes del editor por frases
     "audio_widget_rev": 0,  # se incrementa para resetear el widget de grabación
 }
 
@@ -80,6 +93,7 @@ if duplicate_id and st.session_state.get("loaded_duplicate_from") != duplicate_i
         st.session_state["recipient_name"] = ""
         st.session_state["recipient_group"] = ""
         st.session_state["contact_id"] = None
+        st.session_state["recipients"] = []
         st.info(
             f"Has cargado la dedicatoria del historial («{src.recipient_name}»). "
             "Selecciona el nuevo destinatario para duplicarla."
@@ -101,6 +115,42 @@ def _back_button(target: int):
         _go(target)
 
 
+def _set_recipients(recipients: List[Dict[str, Optional[str]]]) -> None:
+    """Guarda la lista de destinatarios y mantiene los campos legacy del primero."""
+    st.session_state["recipients"] = recipients
+    if recipients:
+        first = recipients[0]
+        st.session_state["recipient_name"] = first.get("name", "") or ""
+        st.session_state["recipient_group"] = first.get("group", "") or ""
+        st.session_state["contact_id"] = first.get("contact_id")
+    else:
+        st.session_state["recipient_name"] = ""
+        st.session_state["recipient_group"] = ""
+        st.session_state["contact_id"] = None
+
+
+def _current_recipients() -> List[Dict[str, Optional[str]]]:
+    """Devuelve la lista de destinatarios (1 o N). Reconstruye desde campos legacy si hace falta."""
+    recipients = st.session_state.get("recipients") or []
+    if recipients:
+        return recipients
+    name = (st.session_state.get("recipient_name") or "").strip()
+    if not name:
+        return []
+    return [
+        {
+            "name": name,
+            "group": (st.session_state.get("recipient_group") or "").strip(),
+            "contact_id": st.session_state.get("contact_id"),
+        }
+    ]
+
+
+def _safe_filename(name: str) -> str:
+    cleaned = name.replace("/", "_").replace("\\", "_").strip()
+    return cleaned.replace(" ", "_") or "tarjeta"
+
+
 # --- Step 1: Destinatario ---
 if step == 1:
     st.subheader("Destinatario")
@@ -108,9 +158,13 @@ if step == 1:
 
     mode = st.radio(
         "¿Cómo quieres elegir al destinatario?",
-        options=["Contacto existente", "Nuevo contacto"],
+        options=["Contacto existente", "Nuevo contacto", "Varios destinatarios"],
         horizontal=True,
         index=0 if contacts else 1,
+        help=(
+            "«Varios destinatarios» genera una tarjeta independiente por persona "
+            "compartiendo el mismo texto de dedicatoria."
+        ),
     )
 
     if mode == "Contacto existente":
@@ -133,11 +187,17 @@ if step == 1:
                 pick = st.selectbox("Destinatario", options=labels, index=default_index)
                 chosen = visible[labels.index(pick)]
                 if st.button("Continuar →", type="primary"):
-                    st.session_state["contact_id"] = chosen.id
-                    st.session_state["recipient_name"] = chosen.name
-                    st.session_state["recipient_group"] = chosen.group
+                    _set_recipients(
+                        [
+                            {
+                                "name": chosen.name,
+                                "group": chosen.group,
+                                "contact_id": chosen.id,
+                            }
+                        ]
+                    )
                     _go(2)
-    else:
+    elif mode == "Nuevo contacto":
         existing_groups = contacts_module.list_groups()
         col1, col2 = st.columns(2)
         with col1:
@@ -157,15 +217,154 @@ if step == 1:
             if save_contact:
                 contact: Contact = contacts_module.find_or_create(new_name, new_group)
                 contact_id = contact.id
-            st.session_state["contact_id"] = contact_id
-            st.session_state["recipient_name"] = new_name.strip()
-            st.session_state["recipient_group"] = (new_group or "").strip()
+            _set_recipients(
+                [
+                    {
+                        "name": new_name.strip(),
+                        "group": (new_group or "").strip(),
+                        "contact_id": contact_id,
+                    }
+                ]
+            )
+            _go(2)
+    else:  # Varios destinatarios
+        st.caption(
+            "Vas a generar **la misma dedicatoria** para varias personas. Cada destinatario "
+            "tendrá su propia tarjeta (PDF + PNG) con su nombre, y se guardará una entrada "
+            "independiente en el historial."
+        )
+
+        selected_existing: List[Contact] = []
+        if contacts:
+            with st.expander("👤 Elegir entre tus contactos existentes", expanded=True):
+                groups = sorted({c.group for c in contacts if c.group})
+                group_filter = st.selectbox(
+                    "Filtrar por grupo",
+                    options=["(todos)", *groups],
+                    key="multi_group_filter",
+                )
+                visible = [
+                    c for c in contacts if group_filter == "(todos)" or c.group == group_filter
+                ]
+                if visible:
+                    labels = [c.label for c in visible]
+                    picks = st.multiselect(
+                        "Selecciona varios destinatarios",
+                        options=labels,
+                        key="multi_existing_picks",
+                    )
+                    selected_existing = [visible[labels.index(p)] for p in picks]
+                else:
+                    st.info("No hay destinatarios en ese grupo.")
+        else:
+            st.info("Aún no tienes contactos guardados. Añádelos abajo manualmente.")
+
+        with st.expander("✍️ Añadir destinatarios nuevos (uno por línea)", expanded=not contacts):
+            existing_groups = contacts_module.list_groups()
+            extra_names_raw = st.text_area(
+                "Nombres adicionales",
+                placeholder="Ej.\nAna\nLuis\nMarta",
+                key="multi_extra_names",
+                height=120,
+            )
+            colg, colsave = st.columns([2, 1])
+            with colg:
+                if existing_groups:
+                    extra_group_pick = st.selectbox(
+                        "Grupo para los nuevos",
+                        options=["— Sin grupo —", "— Nuevo —", *existing_groups],
+                        key="multi_extra_group_pick",
+                    )
+                    if extra_group_pick == "— Nuevo —":
+                        extra_group = st.text_input(
+                            "Nombre del nuevo grupo",
+                            value="",
+                            key="multi_extra_group_new",
+                        )
+                    elif extra_group_pick == "— Sin grupo —":
+                        extra_group = ""
+                    else:
+                        extra_group = extra_group_pick
+                else:
+                    extra_group = st.text_input(
+                        "Grupo para los nuevos (opcional)",
+                        value="",
+                        key="multi_extra_group_text",
+                    )
+            with colsave:
+                save_new = st.checkbox(
+                    "Guardar como contactos",
+                    value=True,
+                    key="multi_save_new",
+                )
+
+        extra_names = [
+            n.strip()
+            for n in (extra_names_raw or "").splitlines()
+            if n.strip()
+        ]
+
+        # Lista final
+        recipients: List[Dict[str, Optional[str]]] = []
+        seen_keys: set = set()
+        for c in selected_existing:
+            key = (c.name.lower(), (c.group or "").lower())
+            if key in seen_keys:
+                continue
+            seen_keys.add(key)
+            recipients.append({"name": c.name, "group": c.group, "contact_id": c.id})
+        for name in extra_names:
+            key = (name.lower(), (extra_group or "").lower())
+            if key in seen_keys:
+                continue
+            seen_keys.add(key)
+            recipients.append(
+                {"name": name, "group": (extra_group or "").strip(), "contact_id": None}
+            )
+
+        if recipients:
+            st.markdown(f"**Destinatarios seleccionados ({len(recipients)}):**")
+            chips = "  ".join(
+                f"🏷️ {r['name']}" + (f" · _{r['group']}_" if r.get("group") else "")
+                for r in recipients
+            )
+            st.markdown(chips)
+        else:
+            st.caption("Aún no has seleccionado a nadie.")
+
+        if st.button(
+            "Continuar →",
+            type="primary",
+            disabled=len(recipients) == 0,
+            key="multi_continue",
+        ):
+            # Guarda contactos nuevos si toca
+            final_recipients: List[Dict[str, Optional[str]]] = []
+            for r in recipients:
+                cid = r.get("contact_id")
+                if cid is None and save_new and r["name"]:
+                    contact = contacts_module.find_or_create(r["name"], r.get("group") or "")
+                    cid = contact.id
+                final_recipients.append(
+                    {"name": r["name"], "group": r.get("group") or "", "contact_id": cid}
+                )
+            _set_recipients(final_recipients)
             _go(2)
 
 # --- Step 2: Texto (audio o tecleado) ---
 elif step == 2:
     st.subheader("Texto de la dedicatoria")
-    st.caption(f"Para: **{st.session_state['recipient_name']}**" + (f" · {st.session_state['recipient_group']}" if st.session_state['recipient_group'] else ""))
+    _recipients_now = _current_recipients()
+    if len(_recipients_now) > 1:
+        nombres = ", ".join(r["name"] for r in _recipients_now)
+        st.caption(
+            f"Para **{len(_recipients_now)} destinatarios** (mismo texto, una tarjeta por persona): {nombres}"
+        )
+    else:
+        st.caption(
+            f"Para: **{st.session_state['recipient_name']}**"
+            + (f" · {st.session_state['recipient_group']}" if st.session_state["recipient_group"] else "")
+        )
     tab_audio, tab_text = st.tabs(["🎤 Grabar audio", "⌨️ Escribir texto"])
 
     with tab_audio:
@@ -194,13 +393,15 @@ elif step == 2:
                         try:
                             raw = transcribe(rec.audio_bytes, filename=rec.filename)
                         except Exception as e:  # noqa: BLE001
-                            st.error(f"Error transcribiendo: {e}")
+                            st.error(f"Error transcribiendo. {friendly_ai_error(e)}")
                             st.stop()
                     with st.spinner("Corrigiendo con IA..."):
                         try:
                             corrected = correct_dedication(raw)
                         except Exception as e:  # noqa: BLE001
-                            st.warning(f"No se pudo corregir, uso el texto crudo: {e}")
+                            st.warning(
+                                f"No se pudo corregir, uso el texto crudo. {friendly_ai_error(e)}"
+                            )
                             corrected = raw
                     st.session_state["input_mode"] = "audio"
                     st.session_state["raw_input"] = raw
@@ -239,7 +440,9 @@ elif step == 2:
                     try:
                         corrected = correct_dedication(typed)
                     except Exception as e:  # noqa: BLE001
-                        st.warning(f"No se pudo corregir, uso el texto crudo: {e}")
+                        st.warning(
+                            f"No se pudo corregir, uso el texto crudo. {friendly_ai_error(e)}"
+                        )
                         corrected = typed.strip()
             else:
                 corrected = typed.strip()
@@ -264,7 +467,9 @@ elif step == 3:
         versions = [{"label": "Texto", "text": st.session_state["final_text"]}]
         st.session_state["versions"] = versions
 
-    tab_edit, tab_compare = st.tabs(["📝 Editar", f"🔍 Comparar versiones ({len(versions)})"])
+    tab_edit, tab_phrases, tab_compare = st.tabs(
+        ["📝 Editar", "🪄 Editar frases", f"🔍 Comparar versiones ({len(versions)})"]
+    )
 
     with tab_edit:
         # Texto crudo de referencia
@@ -313,11 +518,12 @@ elif step == 3:
                             st.session_state["final_text"] = new_text
                             st.session_state["corrected_text"] = new_text
                             st.session_state["final_text_rev"] += 1
+                            st.session_state["sentences_rev"] += 1
                         else:
                             st.info("La IA devolvió el mismo texto. Prueba con otras instrucciones.")
                         st.rerun()
                     except Exception as e:  # noqa: BLE001
-                        st.error(f"Error: {e}")
+                        st.error(friendly_ai_error(e))
         with rcols[1]:
             if st.button("🤖 Re-corregir desde cero", help="Vuelve a aplicar la corrección base sobre el texto crudo original"):
                 with st.spinner("Corrigiendo..."):
@@ -327,11 +533,12 @@ elif step == 3:
                             versions.append({"label": "Re-corrección", "text": corrected})
                             st.session_state["versions"] = versions
                             st.session_state["final_text_rev"] += 1
+                            st.session_state["sentences_rev"] += 1
                         st.session_state["corrected_text"] = corrected
                         st.session_state["final_text"] = corrected
                         st.rerun()
                     except Exception as e:  # noqa: BLE001
-                        st.error(f"Error: {e}")
+                        st.error(friendly_ai_error(e))
 
         st.divider()
         cols = st.columns([1, 3])
@@ -345,6 +552,108 @@ elif step == 3:
                 use_container_width=True,
             ):
                 _go(4)
+
+    with tab_phrases:
+        st.caption(
+            "Aquí puedes **borrar** frases sueltas del texto o **pedirle a la IA que reescriba "
+            "solo las que marques**, sin tocar el resto."
+        )
+        current = st.session_state["final_text"] or ""
+        sentences = split_into_sentences(current)
+        if not sentences:
+            st.info("Escribe primero el texto en la pestaña «📝 Editar».")
+        else:
+            st.markdown(f"**Frases detectadas:** {len(sentences)}")
+            sel_key_base = f"phrase_sel_{st.session_state['sentences_rev']}"
+            selected_indices: List[int] = []
+            for i, s in enumerate(sentences):
+                col_chk, col_txt = st.columns([1, 20])
+                with col_chk:
+                    checked = st.checkbox(
+                        " ",
+                        key=f"{sel_key_base}_{i}",
+                        label_visibility="collapsed",
+                    )
+                with col_txt:
+                    st.markdown(f"_{i+1}._ {s}")
+                if checked:
+                    selected_indices.append(i)
+
+            st.divider()
+            instr_p = st.text_input(
+                "Instrucción para reescribir las frases marcadas",
+                placeholder="Ej. hazlas más cortas · hazlas más formales · cámbialas por una sola frase cariñosa",
+                key=f"phrase_instr_{st.session_state['sentences_rev']}",
+            )
+            pcols = st.columns([1, 1, 3])
+            with pcols[0]:
+                disabled_rewrite = (
+                    not selected_indices or not instr_p.strip() or not cfg.is_ai_ready
+                )
+                if st.button(
+                    "✏️ Reescribir seleccionadas con IA",
+                    type="primary",
+                    disabled=disabled_rewrite,
+                    key=f"phrase_rewrite_{st.session_state['sentences_rev']}",
+                ):
+                    # Reescribimos cada frase marcada por separado para mantener la posición.
+                    new_sentences: List[Optional[str]] = list(sentences)
+                    errored = False
+                    with st.spinner(
+                        f"Reescribiendo {len(selected_indices)} frase(s) con la IA..."
+                    ):
+                        for idx in selected_indices:
+                            original = sentences[idx]
+                            try:
+                                rewritten = rewrite_fragment(original, instr_p)
+                            except Exception as e:  # noqa: BLE001
+                                st.error(
+                                    f"Fallo reescribiendo la frase {idx + 1}. {friendly_ai_error(e)}"
+                                )
+                                errored = True
+                                continue
+                            if rewritten:
+                                new_sentences[idx] = rewritten.strip()
+                    if not errored:
+                        new_text = join_sentences(new_sentences)
+                        if new_text and new_text != current:
+                            label = (
+                                f"Reescritura por frases ({len(selected_indices)}): "
+                                f"«{instr_p.strip()[:40]}{'…' if len(instr_p.strip()) > 40 else ''}»"
+                            )
+                            versions.append({"label": label, "text": new_text})
+                            st.session_state["versions"] = versions
+                            st.session_state["final_text"] = new_text
+                            st.session_state["corrected_text"] = new_text
+                            st.session_state["final_text_rev"] += 1
+                            st.session_state["sentences_rev"] += 1
+                            st.toast("Frases actualizadas con IA.")
+                            st.rerun()
+                        else:
+                            st.info("La IA devolvió el mismo texto. Prueba con otras instrucciones.")
+
+            with pcols[1]:
+                if st.button(
+                    "🗑️ Borrar seleccionadas",
+                    disabled=not selected_indices,
+                    key=f"phrase_delete_{st.session_state['sentences_rev']}",
+                ):
+                    kept = [s for i, s in enumerate(sentences) if i not in selected_indices]
+                    new_text = join_sentences(kept)
+                    if new_text != current:
+                        versions.append(
+                            {
+                                "label": f"Borrado de {len(selected_indices)} frase(s)",
+                                "text": new_text,
+                            }
+                        )
+                        st.session_state["versions"] = versions
+                    st.session_state["final_text"] = new_text
+                    st.session_state["corrected_text"] = new_text
+                    st.session_state["final_text_rev"] += 1
+                    st.session_state["sentences_rev"] += 1
+                    st.toast("Frases eliminadas.")
+                    st.rerun()
 
     with tab_compare:
         if len(versions) < 2:
@@ -387,6 +696,38 @@ elif step == 3:
 elif step == 4:
     st.subheader("Plantilla")
     templates = templates_module.list_templates()
+    recipients_now = _current_recipients()
+    multi = len(recipients_now) > 1
+
+    if multi:
+        st.info(
+            f"Vas a generar **{len(recipients_now)} tarjetas** con el mismo texto, "
+            f"una por destinatario: {', '.join(r['name'] for r in recipients_now)}."
+        )
+
+    def _save_pending_for_all() -> List[str]:
+        ids: List[str] = []
+        targets = recipients_now or [
+            {
+                "name": st.session_state["recipient_name"],
+                "group": st.session_state["recipient_group"],
+                "contact_id": st.session_state["contact_id"],
+            }
+        ]
+        for r in targets:
+            saved = history_module.save_pending(
+                recipient_name=r["name"],
+                recipient_group=r.get("group") or "",
+                contact_id=r.get("contact_id"),
+                input_mode=st.session_state["input_mode"],
+                raw_input=st.session_state["raw_input"],
+                corrected_text=st.session_state["corrected_text"],
+                final_text=st.session_state["final_text"],
+                audio_bytes=st.session_state.get("audio_bytes") if st.session_state["input_mode"] == "audio" else None,
+                is_generic=st.session_state["is_generic"],
+            )
+            ids.append(saved.id)
+        return ids
 
     if not templates:
         st.warning("Todavía no tienes plantillas. Puedes guardar la dedicatoria como pendiente y generar el archivo de impresión más tarde, cuando subas una plantilla.")
@@ -396,18 +737,9 @@ elif step == 4:
         with cols[1]:
             if st.button("💾 Guardar como pendiente", type="primary"):
                 try:
-                    saved = history_module.save_pending(
-                        recipient_name=st.session_state["recipient_name"],
-                        recipient_group=st.session_state["recipient_group"],
-                        contact_id=st.session_state["contact_id"],
-                        input_mode=st.session_state["input_mode"],
-                        raw_input=st.session_state["raw_input"],
-                        corrected_text=st.session_state["corrected_text"],
-                        final_text=st.session_state["final_text"],
-                        audio_bytes=st.session_state.get("audio_bytes") if st.session_state["input_mode"] == "audio" else None,
-                        is_generic=st.session_state["is_generic"],
-                    )
-                    st.session_state["saved_dedication_id"] = saved.id
+                    ids = _save_pending_for_all()
+                    st.session_state["saved_dedication_ids"] = ids
+                    st.session_state["saved_dedication_id"] = ids[0] if ids else None
                     st.session_state["saved_as_pending"] = True
                     _go(5)
                 except Exception as e:  # noqa: BLE001
@@ -424,10 +756,18 @@ elif step == 4:
         chosen = templates[labels.index(choice)]
         st.session_state["selected_template_id"] = chosen.id
 
+        preview_name = (
+            recipients_now[0]["name"] if recipients_now else st.session_state["recipient_name"]
+        )
         with st.spinner("Generando vista previa..."):
             try:
-                preview = render_preview(chosen, st.session_state["recipient_name"], st.session_state["final_text"])
-                st.image(preview, use_container_width=True, caption="Vista previa")
+                preview = render_preview(chosen, preview_name, st.session_state["final_text"])
+                caption = "Vista previa" + (
+                    f" (mostrando «{preview_name}»; las demás serán idénticas con su nombre)"
+                    if multi
+                    else ""
+                )
+                st.image(preview, use_container_width=True, caption=caption)
             except Exception as e:  # noqa: BLE001
                 st.error(f"Error en preview: {e}")
 
@@ -437,30 +777,32 @@ elif step == 4:
         with cols[1]:
             if st.button("💾 Guardar pendiente"):
                 try:
-                    saved = history_module.save_pending(
-                        recipient_name=st.session_state["recipient_name"],
-                        recipient_group=st.session_state["recipient_group"],
-                        contact_id=st.session_state["contact_id"],
-                        input_mode=st.session_state["input_mode"],
-                        raw_input=st.session_state["raw_input"],
-                        corrected_text=st.session_state["corrected_text"],
-                        final_text=st.session_state["final_text"],
-                        audio_bytes=st.session_state.get("audio_bytes") if st.session_state["input_mode"] == "audio" else None,
-                        is_generic=st.session_state["is_generic"],
-                    )
-                    st.session_state["saved_dedication_id"] = saved.id
+                    ids = _save_pending_for_all()
+                    st.session_state["saved_dedication_ids"] = ids
+                    st.session_state["saved_dedication_id"] = ids[0] if ids else None
                     st.session_state["saved_as_pending"] = True
                     _go(5)
                 except Exception as e:  # noqa: BLE001
                     st.error(f"Error guardando: {e}")
         with cols[2]:
-            if st.button("Generar tarjeta ahora →", type="primary"):
+            label_btn = (
+                f"Generar {len(recipients_now)} tarjetas ahora →" if multi else "Generar tarjeta ahora →"
+            )
+            if st.button(label_btn, type="primary"):
                 _go(5)
 
 # --- Step 5: Export ---
 elif step == 5:
     if st.session_state.get("saved_as_pending"):
-        st.success("✅ Dedicatoria guardada como **pendiente**.")
+        pending_ids = st.session_state.get("saved_dedication_ids") or (
+            [st.session_state["saved_dedication_id"]]
+            if st.session_state.get("saved_dedication_id")
+            else []
+        )
+        if len(pending_ids) > 1:
+            st.success(f"✅ {len(pending_ids)} dedicatorias guardadas como **pendientes**.")
+        else:
+            st.success("✅ Dedicatoria guardada como **pendiente**.")
         st.markdown(
             "Cuando tengas las plantillas listas, ve a la página **📜 Historial → pestaña Pendientes** "
             "y pulsa **«Generar todas con plantilla»** para crear los archivos de impresión en lote, "
@@ -475,98 +817,185 @@ elif step == 5:
     if not template:
         st.error("La plantilla seleccionada ya no existe.")
         _back_button(4)
-    else:
-        if st.session_state["saved_dedication_id"] is None:
-            try:
-                with st.spinner("Renderizando PDF + PNG a 300 dpi..."):
-                    pdf_bytes, pdf_warn = render_pdf(template, st.session_state["recipient_name"], st.session_state["final_text"])
-                    png_bytes, png_warn = render_png(template, st.session_state["recipient_name"], st.session_state["final_text"])
-                    back_png_bytes = render_back_png(template) if template.has_back else None
-                if pdf_warn.get("text_overflow") or png_warn.get("text_overflow"):
-                    st.warning("⚠️ El texto no cabe completamente en la zona definida. Considera reducir el tamaño de fuente o ampliar la zona en la plantilla.")
-                if pdf_warn.get("name_overflow") or png_warn.get("name_overflow"):
-                    st.warning("⚠️ El nombre no cabe en su zona.")
-                with st.spinner("Guardando en historial..."):
-                    saved = history_module.save_generated(
-                        template=template,
-                        recipient_name=st.session_state["recipient_name"],
-                        recipient_group=st.session_state["recipient_group"],
-                        contact_id=st.session_state["contact_id"],
-                        input_mode=st.session_state["input_mode"],
-                        raw_input=st.session_state["raw_input"],
-                        corrected_text=st.session_state["corrected_text"],
-                        final_text=st.session_state["final_text"],
-                        pdf_bytes=pdf_bytes,
-                        png_bytes=png_bytes,
-                        back_png_bytes=back_png_bytes,
-                        audio_bytes=st.session_state.get("audio_bytes") if st.session_state["input_mode"] == "audio" else None,
-                        is_generic=st.session_state["is_generic"],
-                    )
-                st.session_state["saved_dedication_id"] = saved.id
-                st.session_state["_pdf_bytes"] = pdf_bytes
-                st.session_state["_png_bytes"] = png_bytes
-                st.session_state["_back_png_bytes"] = back_png_bytes
-            except Exception as e:  # noqa: BLE001
-                st.error(f"Error generando: {e}")
-                _back_button(4)
-                st.stop()
+        st.stop()
 
+    recipients_now = _current_recipients()
+    if not recipients_now:
+        st.error("No hay destinatarios. Vuelve al paso 1.")
+        _back_button(1)
+        st.stop()
+
+    rendered_items = st.session_state.get("_rendered_items") or []
+
+    if not rendered_items:
+        try:
+            text_overflow = False
+            name_overflow = False
+            audio_bytes = (
+                st.session_state.get("audio_bytes")
+                if st.session_state["input_mode"] == "audio"
+                else None
+            )
+            progress = st.progress(0.0, text="Renderizando...")
+            for i, r in enumerate(recipients_now):
+                name = r["name"]
+                progress.progress(
+                    i / max(1, len(recipients_now)),
+                    text=f"Renderizando «{name}» ({i + 1}/{len(recipients_now)})...",
+                )
+                pdf_bytes, pdf_warn = render_pdf(template, name, st.session_state["final_text"])
+                png_bytes, png_warn = render_png(template, name, st.session_state["final_text"])
+                back_png_bytes = render_back_png(template) if template.has_back else None
+                text_overflow = text_overflow or pdf_warn.get("text_overflow") or png_warn.get("text_overflow")
+                name_overflow = name_overflow or pdf_warn.get("name_overflow") or png_warn.get("name_overflow")
+
+                saved = history_module.save_generated(
+                    template=template,
+                    recipient_name=name,
+                    recipient_group=r.get("group") or "",
+                    contact_id=r.get("contact_id"),
+                    input_mode=st.session_state["input_mode"],
+                    raw_input=st.session_state["raw_input"],
+                    corrected_text=st.session_state["corrected_text"],
+                    final_text=st.session_state["final_text"],
+                    pdf_bytes=pdf_bytes,
+                    png_bytes=png_bytes,
+                    back_png_bytes=back_png_bytes,
+                    # Solo guardamos el audio en la primera para no duplicarlo
+                    audio_bytes=audio_bytes if i == 0 else None,
+                    is_generic=st.session_state["is_generic"],
+                )
+                rendered_items.append(
+                    {
+                        "recipient_name": name,
+                        "recipient_group": r.get("group") or "",
+                        "dedication_id": saved.id,
+                        "pdf": pdf_bytes,
+                        "png": png_bytes,
+                        "back_png": back_png_bytes,
+                    }
+                )
+            progress.progress(1.0, text="Listo.")
+            progress.empty()
+            if text_overflow:
+                st.warning("⚠️ El texto no cabe completamente en la zona definida. Considera reducir el tamaño de fuente o ampliar la zona en la plantilla.")
+            if name_overflow:
+                st.warning("⚠️ El nombre no cabe en su zona en alguna tarjeta.")
+
+            st.session_state["_rendered_items"] = rendered_items
+            st.session_state["saved_dedication_ids"] = [it["dedication_id"] for it in rendered_items]
+            st.session_state["saved_dedication_id"] = rendered_items[0]["dedication_id"]
+            st.session_state["_pdf_bytes"] = rendered_items[0]["pdf"]
+            st.session_state["_png_bytes"] = rendered_items[0]["png"]
+            st.session_state["_back_png_bytes"] = rendered_items[0]["back_png"]
+        except Exception as e:  # noqa: BLE001
+            st.error(f"Error generando: {e}")
+            _back_button(4)
+            st.stop()
+
+    multi = len(rendered_items) > 1
+    has_back = bool(rendered_items[0]["back_png"])
+
+    if multi:
+        st.success(
+            f"✅ {len(rendered_items)} dedicatorias generadas y guardadas en el historial."
+        )
+    else:
         st.success("Dedicatoria generada y guardada en el historial.")
 
-        # Vista de las dos caras si hay reverso, o sólo el frente.
-        if st.session_state.get("_back_png_bytes"):
-            tab_front, tab_back = st.tabs(["📄 Frente (con texto)", "🔄 Reverso"])
-            with tab_front:
-                st.image(st.session_state["_png_bytes"], use_container_width=True, caption="Frente")
-            with tab_back:
-                st.image(st.session_state["_back_png_bytes"], use_container_width=True, caption="Reverso")
-        else:
-            st.image(st.session_state["_png_bytes"], use_container_width=True, caption="Vista final")
+    # Selector de destinatario para previsualizar/descargar individualmente
+    if multi:
+        names = [
+            f"{i + 1}. {it['recipient_name']}" + (f" · {it['recipient_group']}" if it['recipient_group'] else "")
+            for i, it in enumerate(rendered_items)
+        ]
+        pick_label = st.selectbox("Ver tarjeta de…", options=names, index=0)
+        active_idx = names.index(pick_label)
+    else:
+        active_idx = 0
 
-        slug = st.session_state["recipient_name"].replace(" ", "_") or "tarjeta"
-        n_cols = 3 if st.session_state.get("_back_png_bytes") else 2
-        cols = st.columns(n_cols)
-        with cols[0]:
-            label = "⬇️ PDF (frente + reverso)" if st.session_state.get("_back_png_bytes") else "⬇️ Descargar PDF (imprenta)"
+    active = rendered_items[active_idx]
+
+    # Vista de las dos caras si hay reverso, o sólo el frente.
+    if active["back_png"]:
+        tab_front, tab_back = st.tabs(["📄 Frente (con texto)", "🔄 Reverso"])
+        with tab_front:
+            st.image(active["png"], use_container_width=True, caption=f"Frente — {active['recipient_name']}")
+        with tab_back:
+            st.image(active["back_png"], use_container_width=True, caption="Reverso")
+    else:
+        st.image(active["png"], use_container_width=True, caption=f"Tarjeta — {active['recipient_name']}")
+
+    slug = _safe_filename(active["recipient_name"])
+    n_cols = 3 if active["back_png"] else 2
+    cols = st.columns(n_cols)
+    with cols[0]:
+        label = "⬇️ PDF (frente + reverso)" if active["back_png"] else "⬇️ Descargar PDF (imprenta)"
+        st.download_button(
+            label,
+            data=active["pdf"],
+            file_name=f"dedicatoria_{slug}.pdf",
+            mime="application/pdf",
+            use_container_width=True,
+            key=f"dl_pdf_{active_idx}",
+        )
+    with cols[1]:
+        st.download_button(
+            "⬇️ PNG frente (300 dpi)",
+            data=active["png"],
+            file_name=f"dedicatoria_{slug}_frente.png",
+            mime="image/png",
+            use_container_width=True,
+            key=f"dl_png_{active_idx}",
+        )
+    if active["back_png"]:
+        with cols[2]:
             st.download_button(
-                label,
-                data=st.session_state["_pdf_bytes"],
-                file_name=f"dedicatoria_{slug}.pdf",
-                mime="application/pdf",
-                use_container_width=True,
-            )
-        with cols[1]:
-            st.download_button(
-                "⬇️ PNG frente (300 dpi)",
-                data=st.session_state["_png_bytes"],
-                file_name=f"dedicatoria_{slug}_frente.png",
+                "⬇️ PNG reverso (300 dpi)",
+                data=active["back_png"],
+                file_name=f"dedicatoria_{slug}_reverso.png",
                 mime="image/png",
                 use_container_width=True,
+                key=f"dl_back_{active_idx}",
             )
-        if st.session_state.get("_back_png_bytes"):
-            with cols[2]:
-                st.download_button(
-                    "⬇️ PNG reverso (300 dpi)",
-                    data=st.session_state["_back_png_bytes"],
-                    file_name=f"dedicatoria_{slug}_reverso.png",
-                    mime="image/png",
-                    use_container_width=True,
-                )
 
-        is_generic = st.checkbox(
-            "Marcar esta dedicatoria como genérica (para reutilizar con otros destinatarios)",
-            value=st.session_state["is_generic"],
-            key="generic_toggle",
+    if multi:
+        st.divider()
+        st.markdown("**📦 Descargar todo en un ZIP**")
+        zip_buf = io.BytesIO()
+        with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            for it in rendered_items:
+                s = _safe_filename(it["recipient_name"])
+                zf.writestr(f"{s}/dedicatoria_{s}.pdf", it["pdf"])
+                zf.writestr(f"{s}/dedicatoria_{s}_frente.png", it["png"])
+                if it["back_png"]:
+                    zf.writestr(f"{s}/dedicatoria_{s}_reverso.png", it["back_png"])
+        st.download_button(
+            f"⬇️ ZIP con las {len(rendered_items)} tarjetas (PDF + PNG)",
+            data=zip_buf.getvalue(),
+            file_name="dedicatorias.zip",
+            mime="application/zip",
+            use_container_width=True,
+            key="dl_zip_all",
         )
-        if is_generic != st.session_state["is_generic"]:
-            st.session_state["is_generic"] = is_generic
-            saved = history_module.get_dedication(st.session_state["saved_dedication_id"])
+
+    is_generic = st.checkbox(
+        "Marcar estas dedicatorias como genéricas (para reutilizar con otros destinatarios)"
+        if multi
+        else "Marcar esta dedicatoria como genérica (para reutilizar con otros destinatarios)",
+        value=st.session_state["is_generic"],
+        key="generic_toggle",
+    )
+    if is_generic != st.session_state["is_generic"]:
+        st.session_state["is_generic"] = is_generic
+        for it in rendered_items:
+            saved = history_module.get_dedication(it["dedication_id"])
             if saved:
                 saved.is_generic = is_generic
                 history_module.update_dedication(saved)
-                st.toast("Estado actualizado.")
+        st.toast("Estado actualizado.")
 
-        st.divider()
-        if st.button("Crear otra dedicatoria"):
-            _reset_flow()
-            st.rerun()
+    st.divider()
+    if st.button("Crear otra dedicatoria"):
+        _reset_flow()
+        st.rerun()
