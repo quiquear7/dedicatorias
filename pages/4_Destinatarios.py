@@ -31,21 +31,27 @@ with st.expander("➕ Añadir destinatario", expanded=True):
         with col1:
             name = st.text_input("Nombre", placeholder="Ej. Enrique")
         with col2:
-            if existing_groups:
-                group_choice = st.selectbox(
-                    "Grupo",
-                    options=["— Nuevo grupo —", *existing_groups],
-                    index=1 if existing_groups else 0,
-                )
-                if group_choice == "— Nuevo grupo —":
-                    group = st.text_input("Nombre del nuevo grupo", placeholder="Ej. Amigos Madrid")
-                else:
-                    group = group_choice
-            else:
-                group = st.text_input("Grupo", placeholder="Ej. Familia")
+            # Streamlit no re-renderiza los formularios al cambiar un widget,
+            # así que dibujamos siempre el selector + el text input para nuevo
+            # grupo; la decisión final se toma en submit con `group_choice`.
+            group_options = ["— Nuevo grupo —", *existing_groups]
+            group_choice = st.selectbox(
+                "Grupo",
+                options=group_options,
+                index=1 if existing_groups else 0,
+                help="Elige uno existente o «— Nuevo grupo —» y rellena el campo de abajo.",
+            )
+            new_group_text = st.text_input(
+                "Nombre del nuevo grupo",
+                placeholder="Sólo si arriba elegiste «— Nuevo grupo —»",
+            )
         notes = st.text_input("Notas (opcional)", placeholder="Cumpleaños, gustos, etc.")
         submitted = st.form_submit_button("Guardar destinatario", type="primary")
         if submitted:
+            if group_choice == "— Nuevo grupo —":
+                group = (new_group_text or "").strip()
+            else:
+                group = group_choice
             try:
                 contacts_module.create_contact(name=name, group=group, notes=notes)
                 st.success(f"Destinatario «{name}» añadido al grupo «{group}».")
