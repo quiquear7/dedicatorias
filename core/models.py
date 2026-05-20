@@ -38,12 +38,17 @@ class TextStyle:
     line_height: float = 1.3
     italic: bool = False
     bold: bool = False
+    # Si está definido y es menor que font_size_pt, el renderer reduce el tamaño
+    # de fuente hasta este mínimo (binary search) para que el texto quepa en su
+    # zona. Si es None, igual o mayor que el máximo, no hay auto-ajuste.
+    font_size_min_pt: Optional[float] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "TextStyle":
+        raw_min = data.get("font_size_min_pt")
         return cls(
             font_family=data.get("font_family", "Helvetica"),
             font_size_pt=float(data.get("font_size_pt", 14.0)),
@@ -52,6 +57,7 @@ class TextStyle:
             line_height=float(data.get("line_height", 1.3)),
             italic=bool(data.get("italic", False)),
             bold=bool(data.get("bold", False)),
+            font_size_min_pt=float(raw_min) if raw_min is not None else None,
         )
 
 

@@ -272,15 +272,14 @@ def _measure_pillow_line_height(font: ImageFont.ImageFont, multiplier: float) ->
 def compute_text_top_mm(text: str, zone: Zone, style: TextStyle, dpi: int = DEFAULT_DPI) -> float:
     """Devuelve la coordenada Y (en mm) donde realmente arrancará el texto al
     dibujarlo en `zone` con `style`. Pillow centra verticalmente el bloque de
-    líneas dentro de la zona, así que la Y de inicio depende del nº de líneas.
+    líneas dentro de la zona, así que la Y de inicio depende del nº de líneas y
+    del tamaño tras el auto-ajuste.
     """
     if not text:
         return zone.y_mm + zone.height_mm / 2  # zona vacía: centro
-    font = _load_pillow_font(style, dpi)
     zone_w_px = mm_to_px(zone.width_mm, dpi)
     zone_h_px = mm_to_px(zone.height_mm, dpi)
-    lines = _wrap_pillow(text, font, zone_w_px)
-    line_height_px = _measure_pillow_line_height(font, style.line_height)
+    _, lines, line_height_px = _fit_pillow_font(text, style, zone_w_px, zone_h_px, dpi)
     max_lines = max(1, int(zone_h_px // max(line_height_px, 1)))
     visible = lines[:max_lines]
     total_height_px = line_height_px * len(visible)
@@ -317,6 +316,58 @@ def _resolve_name_zone(
     )
 
 
+def _fit_pillow_font(
+    text: str,
+    style: TextStyle,
+    zone_w_px: int,
+    zone_h_px: int,
+    dpi: int,
+) -> Tuple[ImageFont.ImageFont, List[str], float]:
+    """Devuelve (font, lines, line_height_px) con el mayor tamaño de fuente en
+    [font_size_min_pt, font_size_pt] que haga que el texto quepa entero en la
+    zona. Si no se ha configurado mínimo (o el máximo ya cabe), usa el máximo.
+    """
+    from dataclasses import replace
+
+    max_pt = style.font_size_pt
+    raw_min = style.font_size_min_pt
+    min_pt = float(raw_min) if raw_min and raw_min > 0 else max_pt
+    min_pt = min(min_pt, max_pt)
+
+    def _measure(pt: float) -> Tuple[ImageFont.ImageFont, List[str], float]:
+        trial = replace(style, font_size_pt=pt)
+        font = _load_pillow_font(trial, dpi)
+        lines = _wrap_pillow(text, font, zone_w_px)
+        line_h = _measure_pillow_line_height(font, style.line_height)
+        return font, lines, line_h
+
+    def _fits(font: ImageFont.ImageFont, lines: List[str], line_h: float) -> bool:
+        if not lines:
+            return True
+        if line_h * len(lines) > zone_h_px:
+            return False
+        for line in lines:
+            if line and font.getlength(line) > zone_w_px:
+                return False
+        return True
+
+    font, lines, line_h = _measure(max_pt)
+    if min_pt >= max_pt or _fits(font, lines, line_h):
+        return font, lines, line_h
+
+    best = _measure(min_pt)
+    lo, hi = min_pt, max_pt
+    while hi - lo > 0.25:
+        mid = (lo + hi) / 2.0
+        cand = _measure(mid)
+        if _fits(*cand):
+            best = cand
+            lo = mid
+        else:
+            hi = mid
+    return best
+
+
 def _draw_text_pillow(
     image: Image.Image,
     text: str,
@@ -328,7 +379,6 @@ def _draw_text_pillow(
     if not text:
         return True
     draw = ImageDraw.Draw(image)
-    font = _load_pillow_font(style, dpi)
     color = _hex_to_rgba(style.color_hex)
 
     zone_x_px = mm_to_px(zone.x_mm, dpi)
@@ -336,12 +386,13 @@ def _draw_text_pillow(
     zone_w_px = mm_to_px(zone.width_mm, dpi)
     zone_h_px = mm_to_px(zone.height_mm, dpi)
 
-    lines = _wrap_pillow(text, font, zone_w_px)
-    line_height_px = _measure_pillow_line_height(font, style.line_height)
+    font, lines, line_height_px = _fit_pillow_font(text, style, zone_w_px, zone_h_px, dpi)
 
     max_lines = max(1, int(zone_h_px // max(line_height_px, 1)))
-    fits = len(lines) <= max_lines
     visible = lines[:max_lines]
+    fits = len(lines) <= max_lines and all(
+        (not line) or font.getlength(line) <= zone_w_px for line in visible
+    )
 
     total_height = line_height_px * len(visible)
     y_start = zone_y_px + max(0, (zone_h_px - total_height) / 2)

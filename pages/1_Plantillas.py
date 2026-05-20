@@ -49,7 +49,16 @@ def _zone_form(prefix: str, default: Zone, max_w: float, max_h: float) -> Zone:
     return Zone(x_mm=x, y_mm=y, width_mm=w, height_mm=h)
 
 
-def _style_form(prefix: str, default: TextStyle) -> TextStyle:
+def _style_form(
+    prefix: str,
+    default: TextStyle,
+    *,
+    size_min_pt: float = 4.0,
+    size_max_pt: float = 120.0,
+    fixed_size_range: Optional[tuple] = None,
+) -> TextStyle:
+    """Si `fixed_size_range=(min_pt, max_pt)` se pasa, los inputs de tamaño
+    desaparecen y se usan esos valores siempre (auto-ajuste en render)."""
     available_fonts = list_available_fonts() or [default.font_family or "Helvetica"]
     # Asegura que la fuente actual de la plantilla esté en la lista aunque no
     # esté instalada en este entorno (p. ej. plantilla creada en otra máquina).
@@ -60,7 +69,11 @@ def _style_form(prefix: str, default: TextStyle) -> TextStyle:
     except ValueError:
         font_index = 0
 
-    cols = st.columns([2, 1, 1, 1])
+    if fixed_size_range is not None:
+        cols = st.columns([2, 1, 1])
+    else:
+        cols = st.columns([2, 1, 1, 1, 1])
+
     with cols[0]:
         font_family = st.selectbox(
             "Fuente",
@@ -73,17 +86,65 @@ def _style_form(prefix: str, default: TextStyle) -> TextStyle:
                 "(con sufijos `-Bold`, `-Italic`, `-BoldItalic` para variantes)."
             ),
         )
-    with cols[1]:
-        size = st.number_input("Tamaño (pt)", min_value=4.0, max_value=120.0, value=float(default.font_size_pt), step=1.0, key=f"{prefix}_size")
-    with cols[2]:
-        align = st.selectbox(
-            "Alineación",
-            options=["left", "center", "right"],
-            index=["left", "center", "right"].index(default.align),
-            key=f"{prefix}_align",
+
+    if fixed_size_range is not None:
+        fixed_min_pt, fixed_max_pt = float(fixed_size_range[0]), float(fixed_size_range[1])
+        size = fixed_max_pt
+        size_min = fixed_min_pt
+        with cols[1]:
+            align = st.selectbox(
+                "Alineación",
+                options=["left", "center", "right"],
+                index=["left", "center", "right"].index(default.align),
+                key=f"{prefix}_align",
+            )
+        with cols[2]:
+            color = st.color_picker("Color", value=default.color_hex, key=f"{prefix}_color")
+        st.caption(
+            f"📏 Tamaño automático: se ajusta entre {fixed_min_pt:.0f} y {fixed_max_pt:.0f} pt "
+            "según la longitud de la dedicatoria."
         )
-    with cols[3]:
-        color = st.color_picker("Color", value=default.color_hex, key=f"{prefix}_color")
+    else:
+        def _clamp(v: float) -> float:
+            return min(max(float(v), size_min_pt), size_max_pt)
+
+        with cols[1]:
+            size = st.number_input(
+                "Tamaño máx (pt)",
+                min_value=size_min_pt,
+                max_value=size_max_pt,
+                value=_clamp(default.font_size_pt),
+                step=1.0,
+                key=f"{prefix}_size",
+                help="Tamaño objetivo para dedicatorias que caben. Es el techo del auto-ajuste.",
+            )
+        with cols[2]:
+            raw_min = (
+                float(default.font_size_min_pt)
+                if default.font_size_min_pt
+                else float(default.font_size_pt)
+            )
+            size_min = st.number_input(
+                "Tamaño mín (pt)",
+                min_value=size_min_pt,
+                max_value=size_max_pt,
+                value=_clamp(raw_min),
+                step=1.0,
+                key=f"{prefix}_size_min",
+                help=(
+                    "Si lo bajas por debajo del máximo, el texto se reduce automáticamente "
+                    "hasta caber en la zona. Igual o mayor que el máximo: tamaño fijo."
+                ),
+            )
+        with cols[3]:
+            align = st.selectbox(
+                "Alineación",
+                options=["left", "center", "right"],
+                index=["left", "center", "right"].index(default.align),
+                key=f"{prefix}_align",
+            )
+        with cols[4]:
+            color = st.color_picker("Color", value=default.color_hex, key=f"{prefix}_color")
     variants_available = set(font_available_variants(font_family))
     has_bold = "bold" in variants_available or "bolditalic" in variants_available
     has_italic = "italic" in variants_available or "bolditalic" in variants_available
@@ -131,6 +192,7 @@ def _style_form(prefix: str, default: TextStyle) -> TextStyle:
     return TextStyle(
         font_family=font_family,
         font_size_pt=size,
+        font_size_min_pt=size_min if size_min < size else None,
         color_hex=color,
         align=align,  # type: ignore[arg-type]
         line_height=line_height,
@@ -235,7 +297,11 @@ with tab_create:
         st.markdown("**Zona de la dedicatoria** (donde irá el texto principal)")
         text_zone_default = Zone(x_mm=10.0, y_mm=20.0, width_mm=width_mm - 20.0, height_mm=height_mm - 40.0)
         text_zone = _zone_form("tz", text_zone_default, width_mm, height_mm)
-        text_style = _style_form("ts", TextStyle(font_size_pt=14.0, align="center"))
+        text_style = _style_form(
+            "ts",
+            TextStyle(font_size_pt=12.0, font_size_min_pt=7.0, align="center"),
+            fixed_size_range=(7.0, 12.0),
+        )
 
         use_name_zone = st.checkbox("Añadir zona separada para el nombre del destinatario", value=False, key="tpl_use_name_zone")
         name_zone: Optional[Zone] = None
@@ -367,8 +433,15 @@ with tab_list:
                         f"- **Dimensiones**: {tpl.width_mm:.1f} × {tpl.height_mm:.1f} mm\n"
                         f"- **Zona texto**: ({tpl.text_zone.x_mm:.0f}, {tpl.text_zone.y_mm:.0f}) "
                         f"{tpl.text_zone.width_mm:.0f}×{tpl.text_zone.height_mm:.0f} mm\n"
-                        f"- **Fuente**: {tpl.text_style.font_family} {tpl.text_style.font_size_pt:.0f}pt "
-                        f"({tpl.text_style.align})\n"
+                        f"- **Fuente**: {tpl.text_style.font_family} "
+                        f"{tpl.text_style.font_size_pt:.0f}pt"
+                        + (
+                            f" (auto-ajuste hasta {tpl.text_style.font_size_min_pt:.0f}pt)"
+                            if tpl.text_style.font_size_min_pt
+                            and tpl.text_style.font_size_min_pt < tpl.text_style.font_size_pt
+                            else ""
+                        )
+                        + f" ({tpl.text_style.align})\n"
                         f"- **Zona nombre**: {'sí' if tpl.name_zone else 'no'}\n"
                         f"- **Reverso**: {'sí' if tpl.has_back else 'no'}\n"
                         f"- **Creada**: {tpl.created_at}"
@@ -517,7 +590,11 @@ with tab_list:
 
                         st.markdown("**🅰️ Zona y estilo del cuerpo del texto** (dedicatoria)")
                         new_text_zone = _zone_form(f"edit_tz_{tpl.id}", tpl.text_zone, ew, eh)
-                        new_text_style = _style_form(f"edit_ts_{tpl.id}", tpl.text_style)
+                        new_text_style = _style_form(
+                            f"edit_ts_{tpl.id}",
+                            tpl.text_style,
+                            fixed_size_range=(7.0, 12.0),
+                        )
 
                         has_name_default = tpl.name_zone is not None
                         keep_name_zone = st.checkbox(
