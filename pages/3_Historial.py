@@ -295,14 +295,17 @@ with tab_pending:
                         key="pending_bulk_delete_yes",
                         type="primary",
                     ):
-                        ok = 0
-                        for did in chosen_ids:
-                            try:
-                                if history_module.delete_dedication(did):
-                                    ok += 1
-                            except Exception:
-                                pass
-                            st.session_state.pop(f"bulk_inc_{did}", None)
+                        with st.spinner(
+                            f"Borrando {len(chosen_ids)} dedicatoria(s)..."
+                        ):
+                            ok = 0
+                            for did in chosen_ids:
+                                try:
+                                    if history_module.delete_dedication(did):
+                                        ok += 1
+                                except Exception:
+                                    pass
+                                st.session_state.pop(f"bulk_inc_{did}", None)
                         st.session_state.pop("_pending_bulk_confirm_delete", None)
                         st.toast(f"{ok} dedicatoria(s) eliminada(s).")
                         st.rerun()
@@ -521,14 +524,17 @@ with tab_rendered:
                         key="hist_bulk_unrender_yes",
                         type="primary",
                     ):
-                        ok = 0
-                        for d in selected:
-                            try:
-                                if history_module.unrender_dedication(d.id):
-                                    ok += 1
-                            except Exception:
-                                pass
-                            st.session_state.pop(f"sel_{d.id}", None)
+                        with st.spinner(
+                            f"Moviendo {sel_count} dedicatoria(s) a pendientes..."
+                        ):
+                            ok = 0
+                            for d in selected:
+                                try:
+                                    if history_module.unrender_dedication(d.id):
+                                        ok += 1
+                                except Exception:
+                                    pass
+                                st.session_state.pop(f"sel_{d.id}", None)
                         st.session_state.pop("_hist_bulk_confirm_unrender", None)
                         st.toast(f"{ok} dedicatoria(s) movidas a pendientes.")
                         st.rerun()
@@ -550,14 +556,17 @@ with tab_rendered:
                         key="hist_bulk_delete_yes",
                         type="primary",
                     ):
-                        ok = 0
-                        for d in selected:
-                            try:
-                                if history_module.delete_dedication(d.id):
-                                    ok += 1
-                            except Exception:
-                                pass
-                            st.session_state.pop(f"sel_{d.id}", None)
+                        with st.spinner(
+                            f"Borrando {sel_count} dedicatoria(s)..."
+                        ):
+                            ok = 0
+                            for d in selected:
+                                try:
+                                    if history_module.delete_dedication(d.id):
+                                        ok += 1
+                                except Exception:
+                                    pass
+                                st.session_state.pop(f"sel_{d.id}", None)
                         st.session_state.pop("_hist_bulk_confirm_delete", None)
                         st.toast(f"{ok} dedicatoria(s) eliminadas.")
                         st.rerun()
