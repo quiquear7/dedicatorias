@@ -62,6 +62,7 @@ DEFAULT_STATE = {
     "sentences_rev": 0,  # se incrementa para resetear checkboxes del editor por frases
     "audio_widget_rev": 0,  # se incrementa para resetear el widget de grabación
     "include_back": True,  # incluir la cara trasera en PDF/ZIP cuando la plantilla la tiene
+    "_saving_pending": False,  # bloquea el botón mientras se persiste la dedicatoria
 }
 
 for key, default in DEFAULT_STATE.items():
@@ -737,21 +738,38 @@ elif step == 4:
             ids.append(saved.id)
         return ids
 
+    # Si el usuario acaba de pulsar "Guardar pendiente", la primera ronda solo
+    # activó el flag y volvió a renderizar con el botón en disabled. En esta
+    # segunda pasada hacemos el trabajo de verdad, con el spinner visible y
+    # sin riesgo de que un doble click lo dispare dos veces.
+    saving_pending = bool(st.session_state.get("_saving_pending"))
+    if saving_pending:
+        with st.spinner("Guardando dedicatoria(s) como pendiente..."):
+            try:
+                ids = _save_pending_for_all()
+                st.session_state["saved_dedication_ids"] = ids
+                st.session_state["saved_dedication_id"] = ids[0] if ids else None
+                st.session_state["saved_as_pending"] = True
+                st.session_state["_saving_pending"] = False
+                _go(5)
+            except Exception as e:  # noqa: BLE001
+                st.session_state["_saving_pending"] = False
+                st.error(f"Error guardando: {e}")
+                saving_pending = False
+
     if not templates:
         st.warning("Todavía no tienes plantillas. Puedes guardar la dedicatoria como pendiente y generar el archivo de impresión más tarde, cuando subas una plantilla.")
         cols = st.columns([1, 3])
         with cols[0]:
             _back_button(3)
         with cols[1]:
-            if st.button("💾 Guardar como pendiente", type="primary"):
-                try:
-                    ids = _save_pending_for_all()
-                    st.session_state["saved_dedication_ids"] = ids
-                    st.session_state["saved_dedication_id"] = ids[0] if ids else None
-                    st.session_state["saved_as_pending"] = True
-                    _go(5)
-                except Exception as e:  # noqa: BLE001
-                    st.error(f"Error guardando: {e}")
+            if st.button(
+                "💾 Guardar como pendiente",
+                type="primary",
+                disabled=saving_pending,
+            ):
+                st.session_state["_saving_pending"] = True
+                st.rerun()
     else:
         labels = [f"{t.name} ({t.width_mm:.0f}×{t.height_mm:.0f} mm)" for t in templates]
         default_idx = 0
@@ -797,15 +815,9 @@ elif step == 4:
         with cols[0]:
             _back_button(3)
         with cols[1]:
-            if st.button("💾 Guardar pendiente"):
-                try:
-                    ids = _save_pending_for_all()
-                    st.session_state["saved_dedication_ids"] = ids
-                    st.session_state["saved_dedication_id"] = ids[0] if ids else None
-                    st.session_state["saved_as_pending"] = True
-                    _go(5)
-                except Exception as e:  # noqa: BLE001
-                    st.error(f"Error guardando: {e}")
+            if st.button("💾 Guardar pendiente", disabled=saving_pending):
+                st.session_state["_saving_pending"] = True
+                st.rerun()
         with cols[2]:
             label_btn = (
                 f"Generar {len(recipients_now)} tarjetas ahora →" if multi else "Generar tarjeta ahora →"

@@ -147,7 +147,7 @@ with tab_pending:
                     chosen_ids.append(d.id)
 
             st.divider()
-            cta = st.columns([2, 1])
+            cta = st.columns([2, 1, 1])
             cta[0].markdown(
                 f"**{len(chosen_ids)}** seleccionadas para renderizar con «{chosen_template.name}»"
             )
@@ -177,6 +177,43 @@ with tab_pending:
                             for err in summary["errors"]:
                                 st.code(str(err))
                     st.rerun()
+            with cta[2]:
+                if st.button(
+                    f"🗑️ Borrar ({len(chosen_ids)})",
+                    key="pending_bulk_delete",
+                    disabled=not chosen_ids,
+                    use_container_width=True,
+                ):
+                    st.session_state["_pending_bulk_confirm_delete"] = True
+                    st.rerun()
+
+            if st.session_state.get("_pending_bulk_confirm_delete") and chosen_ids:
+                st.error(
+                    f"Vas a **borrar {len(chosen_ids)} dedicatoria(s) pendiente(s)** "
+                    "del historial. Esto elimina texto y audio. Esta acción **no se puede deshacer**."
+                )
+                cc = st.columns([1, 1, 4])
+                with cc[0]:
+                    if st.button(
+                        "🗑️ Sí, borrar pendientes",
+                        key="pending_bulk_delete_yes",
+                        type="primary",
+                    ):
+                        ok = 0
+                        for did in chosen_ids:
+                            try:
+                                if history_module.delete_dedication(did):
+                                    ok += 1
+                            except Exception:
+                                pass
+                            st.session_state.pop(f"bulk_inc_{did}", None)
+                        st.session_state.pop("_pending_bulk_confirm_delete", None)
+                        st.toast(f"{ok} pendiente(s) eliminada(s).")
+                        st.rerun()
+                with cc[1]:
+                    if st.button("✋ Cancelar", key="pending_bulk_delete_cancel"):
+                        st.session_state.pop("_pending_bulk_confirm_delete", None)
+                        st.rerun()
 
         st.divider()
         st.markdown("**O renderiza individualmente:**")
