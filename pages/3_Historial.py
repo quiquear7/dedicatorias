@@ -83,12 +83,15 @@ tab_rendered, tab_pending = st.tabs([
 # Pestaña: PENDIENTES — generación masiva
 # ============================================================================
 with tab_pending:
-    if not pending_list:
-        st.info("No tienes dedicatorias pendientes. Cuando guardes una sin plantilla aparecerá aquí.")
+    # Pestaña «Pendientes»: pendientes + ya generadas (con marca), para poder
+    # consultarlas o re-renderizarlas con otra plantilla sin salir de aquí.
+    display_list = pending_list + rendered_list
+    if not display_list:
+        st.info("Todavía no tienes dedicatorias. Cuando guardes una aparecerá aquí.")
     else:
         st.markdown(
-            f"Tienes **{len(pending_list)}** dedicatorias guardadas sin renderizar. "
-            "Selecciona una plantilla y genera todas (o las que elijas) en un solo paso."
+            f"**{len(pending_list)}** pendientes por generar · "
+            f"**{len(rendered_list)}** ya generadas (puedes re-renderizar con otra plantilla)."
         )
         if not templates_all:
             st.warning("Necesitas tener al menos una plantilla creada en la página «Plantillas» para renderizar.")
@@ -97,19 +100,20 @@ with tab_pending:
             tchoice = st.selectbox("Plantilla a usar para generar", options=tlabels, key="bulk_tpl")
             chosen_template = templates_all[tlabels.index(tchoice)]
 
-            # Vista previa con una de las pendientes (la primera por defecto, seleccionable)
+            # Vista previa: cualquiera de la lista combinada.
             with st.expander("👁️ Vista previa con esta plantilla", expanded=True):
                 preview_labels = [
-                    f"{p.recipient_name} — {p.final_text[:40]}{'…' if len(p.final_text) > 40 else ''}"
-                    for p in pending_list
+                    f"{'📄' if p.is_pending else '✅'} {p.recipient_name} — "
+                    f"{p.final_text[:40]}{'…' if len(p.final_text) > 40 else ''}"
+                    for p in display_list
                 ]
                 preview_idx = st.selectbox(
                     "Dedicatoria a previsualizar",
-                    options=range(len(pending_list)),
+                    options=range(len(display_list)),
                     format_func=lambda i: preview_labels[i],
                     key="bulk_preview_pick",
                 )
-                preview_target = pending_list[preview_idx]
+                preview_target = display_list[preview_idx]
                 with st.spinner("Renderizando preview..."):
                     try:
                         png_bytes = render_preview(
@@ -122,42 +126,55 @@ with tab_pending:
                         st.warning(f"No se pudo generar preview: {e}")
 
             st.markdown("**Selecciona qué dedicatorias renderizar:**")
-            sel_cols = st.columns([1, 1, 2])
+            sel_cols = st.columns([1, 1, 1, 1])
             with sel_cols[0]:
                 if st.button(
-                    "☑️ Seleccionar todas",
-                    key="pending_sel_all",
+                    "☑️ Sólo pendientes",
+                    key="pending_sel_pending",
                     use_container_width=True,
+                    help="Marca todas las pendientes y desmarca las ya generadas.",
                 ):
-                    for d in pending_list:
-                        st.session_state[f"bulk_inc_{d.id}"] = True
+                    for d in display_list:
+                        st.session_state[f"bulk_inc_{d.id}"] = d.is_pending
                     st.rerun()
             with sel_cols[1]:
                 if st.button(
-                    "⬜ Limpiar selección",
+                    "☑️ Todas",
+                    key="pending_sel_all",
+                    use_container_width=True,
+                    help="Incluye también las ya generadas (se re-renderizarán).",
+                ):
+                    for d in display_list:
+                        st.session_state[f"bulk_inc_{d.id}"] = True
+                    st.rerun()
+            with sel_cols[2]:
+                if st.button(
+                    "⬜ Limpiar",
                     key="pending_sel_clear",
                     use_container_width=True,
                 ):
-                    for d in pending_list:
+                    for d in display_list:
                         st.session_state[f"bulk_inc_{d.id}"] = False
                     st.rerun()
 
-            head = st.columns([3, 3, 4, 1])
-            head[0].markdown("**Destinatario**")
-            head[1].markdown("**Grupo**")
-            head[2].markdown("**Texto (resumen)**")
-            head[3].markdown("**Incluir**")
+            head = st.columns([1, 3, 3, 4, 1])
+            head[0].markdown("**Estado**")
+            head[1].markdown("**Destinatario**")
+            head[2].markdown("**Grupo**")
+            head[3].markdown("**Texto (resumen)**")
+            head[4].markdown("**Incluir**")
 
             chosen_ids: list[str] = []
-            for d in pending_list:
-                row = st.columns([3, 3, 4, 1])
-                row[0].write(d.recipient_name)
-                row[1].write(d.recipient_group or "—")
+            for d in display_list:
+                row = st.columns([1, 3, 3, 4, 1])
+                row[0].write("📄 Pendiente" if d.is_pending else "✅ Generada")
+                row[1].write(d.recipient_name)
+                row[2].write(d.recipient_group or "—")
                 preview_text = (d.final_text[:80] + "…") if len(d.final_text) > 80 else d.final_text
-                row[2].caption(preview_text)
-                included = row[3].checkbox(
+                row[3].caption(preview_text)
+                included = row[4].checkbox(
                     "incluir",
-                    value=True,
+                    value=d.is_pending,
                     key=f"bulk_inc_{d.id}",
                     label_visibility="collapsed",
                 )
@@ -207,13 +224,14 @@ with tab_pending:
 
             if st.session_state.get("_pending_bulk_confirm_delete") and chosen_ids:
                 st.error(
-                    f"Vas a **borrar {len(chosen_ids)} dedicatoria(s) pendiente(s)** "
-                    "del historial. Esto elimina texto y audio. Esta acción **no se puede deshacer**."
+                    f"Vas a **borrar {len(chosen_ids)} dedicatoria(s)** del historial "
+                    "(incluyendo texto, audio y, si las hay, las tarjetas renderizadas). "
+                    "Esta acción **no se puede deshacer**."
                 )
                 cc = st.columns([1, 1, 4])
                 with cc[0]:
                     if st.button(
-                        "🗑️ Sí, borrar pendientes",
+                        "🗑️ Sí, borrar",
                         key="pending_bulk_delete_yes",
                         type="primary",
                     ):
@@ -226,7 +244,7 @@ with tab_pending:
                                 pass
                             st.session_state.pop(f"bulk_inc_{did}", None)
                         st.session_state.pop("_pending_bulk_confirm_delete", None)
-                        st.toast(f"{ok} pendiente(s) eliminada(s).")
+                        st.toast(f"{ok} dedicatoria(s) eliminada(s).")
                         st.rerun()
                 with cc[1]:
                     if st.button("✋ Cancelar", key="pending_bulk_delete_cancel"):
@@ -234,10 +252,11 @@ with tab_pending:
                         st.rerun()
 
         st.divider()
-        st.markdown("**O renderiza individualmente:**")
-        for d in pending_list:
+        st.markdown("**O actúa individualmente:**")
+        for d in display_list:
+            status_icon = "⏳" if d.is_pending else "✅"
             with st.expander(
-                f"⏳ {d.recipient_name} · {d.recipient_group or '(sin grupo)'} · {d.created_at[:10]}"
+                f"{status_icon} {d.recipient_name} · {d.recipient_group or '(sin grupo)'} · {d.created_at[:10]}"
             ):
                 st.markdown("**Texto:**")
                 st.markdown(f"> {d.final_text}")
@@ -258,7 +277,8 @@ with tab_pending:
                         if st.button("👁️ Preview", key=f"ind_prev_{d.id}", use_container_width=True):
                             st.session_state[f"_show_prev_{d.id}"] = True
                     with cols[2]:
-                        if st.button("🚀 Generar", key=f"ind_gen_{d.id}", use_container_width=True, type="primary"):
+                        gen_label = "🔄 Re-generar" if not d.is_pending else "🚀 Generar"
+                        if st.button(gen_label, key=f"ind_gen_{d.id}", use_container_width=True, type="primary"):
                             with st.spinner("Generando..."):
                                 try:
                                     history_module.render_pending(d.id, ind_template)
@@ -273,7 +293,7 @@ with tab_pending:
                                 st.image(png, use_container_width=True)
                             except Exception as e:  # noqa: BLE001
                                 st.warning(f"No se pudo generar preview: {e}")
-                if st.button("🗑️ Eliminar pendiente", key=f"ind_del_{d.id}"):
+                if st.button("🗑️ Eliminar", key=f"ind_del_{d.id}"):
                     history_module.delete_dedication(d.id)
                     st.toast("Eliminada.")
                     st.rerun()
