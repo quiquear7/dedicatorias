@@ -122,7 +122,25 @@ with tab_pending:
                         st.warning(f"No se pudo generar preview: {e}")
 
             st.markdown("**Selecciona qué dedicatorias renderizar:**")
-            select_all = st.checkbox("Seleccionar todas", value=True, key="bulk_all")
+            sel_cols = st.columns([1, 1, 2])
+            with sel_cols[0]:
+                if st.button(
+                    "☑️ Seleccionar todas",
+                    key="pending_sel_all",
+                    use_container_width=True,
+                ):
+                    for d in pending_list:
+                        st.session_state[f"bulk_inc_{d.id}"] = True
+                    st.rerun()
+            with sel_cols[1]:
+                if st.button(
+                    "⬜ Limpiar selección",
+                    key="pending_sel_clear",
+                    use_container_width=True,
+                ):
+                    for d in pending_list:
+                        st.session_state[f"bulk_inc_{d.id}"] = False
+                    st.rerun()
 
             head = st.columns([3, 3, 4, 1])
             head[0].markdown("**Destinatario**")
@@ -139,7 +157,7 @@ with tab_pending:
                 row[2].caption(preview_text)
                 included = row[3].checkbox(
                     "incluir",
-                    value=select_all,
+                    value=True,
                     key=f"bulk_inc_{d.id}",
                     label_visibility="collapsed",
                 )
