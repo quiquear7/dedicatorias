@@ -209,9 +209,10 @@ with tab_pending:
                     st.rerun()
             with sel_cols[2]:
                 if st.button(
-                    "⬜ Limpiar",
+                    "⬜ Desmarcar todas",
                     key="pending_sel_clear",
                     use_container_width=True,
+                    help="Quita la selección de todas las dedicatorias de la lista.",
                 ):
                     for d in display_list:
                         st.session_state[f"bulk_inc_{d.id}"] = False
@@ -438,10 +439,11 @@ with tab_rendered:
                     st.rerun()
             with sel_cols[1]:
                 if st.button(
-                    "⬜ Limpiar selección",
+                    f"⬜ Desmarcar todas ({sel_count})",
                     key="hist_sel_clear",
                     disabled=sel_count == 0,
                     use_container_width=True,
+                    help="Quita la selección de todas las dedicatorias visibles.",
                 ):
                     for d in filtered:
                         st.session_state[f"sel_{d.id}"] = False
