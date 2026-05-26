@@ -544,3 +544,172 @@ def render_preview(
 ) -> bytes:
     png_bytes, _ = render_png(template, recipient, dedication, dpi=PREVIEW_DPI)
     return png_bytes
+
+
+# ----------------------------------------------------------------------------
+# Imposición A4: agrupa varias tarjetas en hojas A4 para imprenta.
+# ----------------------------------------------------------------------------
+
+# Coordenadas (X, Y_desde_arriba) en mm para una cuadrícula 2×2 de tarjetas
+# 8×13 cm sobre A4 vertical (210×297 mm). Centradas con márgenes laterales y
+# verticales casi simétricos (25 mm laterales · 18 mm superior · 19 mm inferior).
+A4_2x2_POSITIONS_MM: List[Tuple[float, float]] = [
+    (25.0, 18.0),    # Tarjeta 1 — fila superior izquierda
+    (105.0, 18.0),   # Tarjeta 2 — fila superior derecha
+    (25.0, 148.0),   # Tarjeta 3 — fila inferior izquierda
+    (105.0, 148.0),  # Tarjeta 4 — fila inferior derecha
+]
+
+A4_WIDTH_MM = 210.0
+A4_HEIGHT_MM = 297.0
+
+
+def _draw_crop_guides(
+    c: "rl_canvas.Canvas",
+    positions_mm: List[Tuple[float, float]],
+    card_w_mm: float,
+    card_h_mm: float,
+    page_w_mm: float,
+    page_h_mm: float,
+) -> None:
+    """Dibuja líneas finas grises (0.5pt) en los márgenes exteriores del A4
+    siguiendo los bordes de las tarjetas, para guiar el corte con guillotina
+    sin invadir el área impresa.
+    """
+    if not positions_mm:
+        return
+
+    xs = sorted({x for x, _ in positions_mm} | {x + card_w_mm for x, _ in positions_mm})
+    ys_top = sorted(
+        {y for _, y in positions_mm} | {y + card_h_mm for _, y in positions_mm}
+    )
+
+    top_block_mm = min(y for _, y in positions_mm)
+    bottom_block_mm = max(y + card_h_mm for _, y in positions_mm)
+    left_block_mm = min(x for x, _ in positions_mm)
+    right_block_mm = max(x + card_w_mm for x, _ in positions_mm)
+
+    c.saveState()
+    c.setStrokeColorRGB(0.6, 0.6, 0.6)
+    c.setLineWidth(0.5)
+
+    # Verticales: tramos en margen superior (0 .. top_block) e inferior
+    for x_mm in xs:
+        x_pt = x_mm * mm
+        c.line(x_pt, page_h_mm * mm, x_pt, (page_h_mm - top_block_mm) * mm)
+        c.line(x_pt, (page_h_mm - bottom_block_mm) * mm, x_pt, 0)
+
+    # Horizontales: tramos en margen izquierdo y derecho
+    for y_top_mm in ys_top:
+        y_pt = (page_h_mm - y_top_mm) * mm
+        c.line(0, y_pt, left_block_mm * mm, y_pt)
+        c.line(right_block_mm * mm, y_pt, page_w_mm * mm, y_pt)
+
+    c.restoreState()
+
+
+def render_imposed_a4_pdf(
+    front_pngs: List[bytes],
+    back_png: Optional[bytes] = None,
+    *,
+    card_width_mm: float = 80.0,
+    card_height_mm: float = 130.0,
+    grid_positions_mm: Optional[List[Tuple[float, float]]] = None,
+    page_width_mm: float = A4_WIDTH_MM,
+    page_height_mm: float = A4_HEIGHT_MM,
+    include_crop_guides: bool = False,
+) -> bytes:
+    """Genera un único PDF A4 con las tarjetas dispuestas en cuadrícula 2×2
+    (4 tarjetas por hoja), intercalando hojas de anverso y reverso para
+    impresión a doble cara.
+
+    Args:
+        front_pngs: PNGs (uno por dedicatoria) con el frente ya renderizado.
+        back_png: PNG del reverso común a todas las dedicatorias (o None si
+            no aplica; en ese caso no se generan hojas de reverso).
+        card_width_mm, card_height_mm: tamaño físico de cada tarjeta.
+        grid_positions_mm: lista de (X, Y_desde_arriba) en mm para cada hueco
+            de la cuadrícula. Por defecto, A4_2x2_POSITIONS_MM (tarjetas 8×13).
+        include_crop_guides: si True, añade líneas grises 0.5pt en los
+            márgenes para guiar el corte.
+
+    El reverso se replica idénticamente en los 4 huecos de cada hoja de
+    reverso. Las coordenadas usadas son simétricas (mismos márgenes laterales
+    a izquierda y derecha) para que tras el flip dúplex de la impresora cada
+    tarjeta del anverso coincida físicamente con su reverso.
+    """
+    from reportlab.lib.utils import ImageReader
+
+    positions = grid_positions_mm or A4_2x2_POSITIONS_MM
+    cards_per_sheet = len(positions)
+    if cards_per_sheet == 0:
+        raise ValueError("grid_positions_mm no puede estar vacío")
+
+    page_w_pt = page_width_mm * mm
+    page_h_pt = page_height_mm * mm
+    card_w_pt = card_width_mm * mm
+    card_h_pt = card_height_mm * mm
+
+    def _y_rl(y_top_mm: float) -> float:
+        return (page_height_mm - y_top_mm - card_height_mm) * mm
+
+    out = io.BytesIO()
+    c = rl_canvas.Canvas(out, pagesize=(page_w_pt, page_h_pt))
+
+    # ReportLab necesita un ImageReader nuevo por uso fiable; el reverso se
+    # repite muchas veces, así que lo cacheamos.
+    back_reader = ImageReader(io.BytesIO(back_png)) if back_png else None
+
+    total = len(front_pngs)
+    if total == 0:
+        c.save()
+        return out.getvalue()
+
+    sheets = (total + cards_per_sheet - 1) // cards_per_sheet
+    for sheet_idx in range(sheets):
+        # Hoja de anversos (página impar).
+        for slot in range(cards_per_sheet):
+            global_idx = sheet_idx * cards_per_sheet + slot
+            if global_idx >= total:
+                break
+            x_mm, y_top_mm = positions[slot]
+            c.drawImage(
+                ImageReader(io.BytesIO(front_pngs[global_idx])),
+                x_mm * mm,
+                _y_rl(y_top_mm),
+                width=card_w_pt,
+                height=card_h_pt,
+                preserveAspectRatio=False,
+                mask="auto",
+            )
+        if include_crop_guides:
+            _draw_crop_guides(
+                c, positions, card_width_mm, card_height_mm,
+                page_width_mm, page_height_mm,
+            )
+        c.showPage()
+
+        # Hoja de reversos (página par): 4 reversos idénticos. Se emite también
+        # en la última hoja aunque haya huecos en el anverso, para que la
+        # paginación dúplex no se descuadre.
+        if back_reader is not None:
+            for slot in range(cards_per_sheet):
+                x_mm, y_top_mm = positions[slot]
+                c.drawImage(
+                    back_reader,
+                    x_mm * mm,
+                    _y_rl(y_top_mm),
+                    width=card_w_pt,
+                    height=card_h_pt,
+                    preserveAspectRatio=False,
+                    mask="auto",
+                )
+            if include_crop_guides:
+                _draw_crop_guides(
+                    c, positions, card_width_mm, card_height_mm,
+                    page_width_mm, page_height_mm,
+                )
+            c.showPage()
+
+    c.save()
+    return out.getvalue()

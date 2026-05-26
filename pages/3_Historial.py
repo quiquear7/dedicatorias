@@ -78,6 +78,63 @@ def _render_dedication_text_block(d) -> None:
             st.rerun()
 
 
+@st.cache_data(show_spinner="Componiendo PDF A4 imprenta…")
+def _build_a4_imposed_pdf(signature: tuple, include_crop_guides: bool) -> tuple:
+    """Compone un único PDF A4 con todas las dedicatorias indicadas
+    intercalando anversos y reversos (cuadrícula 2×2). `signature` es una
+    tupla inmutable de (id, png_path, back_png_path, card_w_mm, card_h_mm) por
+    cada tarjeta seleccionada para que Streamlit pueda cachear el resultado.
+
+    Devuelve `(pdf_bytes, missing_count, warning_text_or_None)`.
+    """
+    from core.config import get_storage as _get_storage
+    from core import rendering as rendering_module
+
+    storage = _get_storage()
+    front_bytes_list: list = []
+    back_bytes: bytes | None = None
+    card_w: float | None = None
+    card_h: float | None = None
+    missing = 0
+    sizes: set = set()
+
+    for _did, png_path, back_path, w_mm, h_mm in signature:
+        if w_mm and h_mm:
+            sizes.add((round(float(w_mm), 1), round(float(h_mm), 1)))
+            if card_w is None:
+                card_w, card_h = float(w_mm), float(h_mm)
+        if not png_path:
+            missing += 1
+            continue
+        try:
+            front_bytes_list.append(storage.get(png_path))
+        except Exception:  # noqa: BLE001
+            missing += 1
+            continue
+        if back_bytes is None and back_path:
+            try:
+                back_bytes = storage.get(back_path)
+            except Exception:  # noqa: BLE001
+                back_bytes = None
+
+    warning = None
+    if len(sizes) > 1:
+        warning = (
+            "⚠️ Hay tarjetas de varios tamaños físicos en la selección. "
+            f"Se usa el de la primera ({card_w:.0f}×{card_h:.0f} mm). "
+            "Para imprenta agrupa selecciones del mismo formato."
+        )
+
+    pdf_bytes = rendering_module.render_imposed_a4_pdf(
+        front_bytes_list,
+        back_bytes,
+        card_width_mm=card_w or 80.0,
+        card_height_mm=card_h or 130.0,
+        include_crop_guides=include_crop_guides,
+    )
+    return pdf_bytes, missing, warning
+
+
 @st.cache_data(show_spinner="Construyendo ZIP…")
 def _build_bulk_zip(signature: tuple) -> tuple:
     """Genera un ZIP con las dedicatorias indicadas. `signature` es una tupla
@@ -449,11 +506,23 @@ with tab_rendered:
                         st.session_state[f"sel_{d.id}"] = False
                     st.rerun()
 
-            # Fila 2: acciones
-            act_cols = st.columns([1, 1, 1])
+            # Opciones de exportación del modo A4 (solo afectan al PDF A4).
+            st.checkbox(
+                "📏 Incluir guías de corte en el PDF A4 (líneas grises 0.5pt en los márgenes)",
+                key="hist_a4_crop_guides",
+                value=False,
+                help=(
+                    "Pinta líneas finas en los márgenes exteriores del A4 para "
+                    "guiar el corte posterior con guillotina. No invade el área "
+                    "de las tarjetas."
+                ),
+            )
+
+            # Fila 2: acciones — dos modos de exportación + utilidades.
+            act_cols = st.columns([1, 1, 1, 1])
             with act_cols[0]:
-                # ZIP: construye eagerly (cacheado) y muestra el download_button real,
-                # así un solo click descarga sin paso intermedio.
+                # ZIP de PDFs individuales (un PDF por dedicatoria, tamaño de
+                # tarjeta original). Construye eagerly y cacheado.
                 if sel_count > 0:
                     signature = tuple(
                         (
@@ -468,13 +537,17 @@ with tab_rendered:
                     try:
                         zip_bytes, missing = _build_bulk_zip(signature)
                         st.download_button(
-                            f"📦 Descargar ZIP ({sel_count})",
+                            f"📦 ZIP individuales ({sel_count})",
                             data=zip_bytes,
                             file_name="dedicatorias.zip",
                             mime="application/zip",
                             key="hist_bulk_zip_dl",
                             type="primary",
                             use_container_width=True,
+                            help=(
+                                "Descarga un ZIP con un PDF por dedicatoria al "
+                                "tamaño original de la tarjeta."
+                            ),
                         )
                         if missing:
                             st.caption(
@@ -484,12 +557,59 @@ with tab_rendered:
                         st.error(f"No se pudo construir el ZIP: {e}")
                 else:
                     st.button(
-                        "📦 Descargar ZIP (0)",
+                        "📦 ZIP individuales (0)",
                         key="hist_bulk_zip_dl_disabled",
                         disabled=True,
                         use_container_width=True,
                     )
             with act_cols[1]:
+                # PDF A4 con imposición 2×2 + reverso intercalado.
+                if sel_count > 0:
+                    a4_signature = tuple(
+                        (
+                            d.id,
+                            d.card_png_path,
+                            d.card_back_png_path,
+                            (d.template_snapshot or {}).get("width_mm"),
+                            (d.template_snapshot or {}).get("height_mm"),
+                        )
+                        for d in selected
+                    )
+                    try:
+                        a4_pdf_bytes, a4_missing, a4_warning = _build_a4_imposed_pdf(
+                            a4_signature,
+                            st.session_state.get("hist_a4_crop_guides", False),
+                        )
+                        st.download_button(
+                            f"📄 PDF A4 imprenta ({sel_count})",
+                            data=a4_pdf_bytes,
+                            file_name="dedicatorias_a4_imprenta.pdf",
+                            mime="application/pdf",
+                            key="hist_bulk_a4_dl",
+                            type="primary",
+                            use_container_width=True,
+                            help=(
+                                "Único PDF A4 con cuadrícula 2×2 (4 tarjetas por "
+                                "hoja) y hojas de reverso intercaladas, listo para "
+                                "impresión dúplex en imprenta digital."
+                            ),
+                        )
+                        if a4_missing:
+                            st.caption(
+                                f"⚠️ {a4_missing} frente(s) no se han podido leer del almacenamiento."
+                            )
+                        if a4_warning:
+                            st.caption(a4_warning)
+                    except Exception as e:  # noqa: BLE001
+                        st.error(f"No se pudo construir el PDF A4: {e}")
+                else:
+                    st.button(
+                        "📄 PDF A4 imprenta (0)",
+                        key="hist_bulk_a4_dl_disabled",
+                        disabled=True,
+                        use_container_width=True,
+                    )
+            with act_cols[2]:
                 if st.button(
                     f"🔄 A pendientes ({sel_count})",
                     key="hist_bulk_unrender",
@@ -502,7 +622,7 @@ with tab_rendered:
                 ):
                     st.session_state["_hist_bulk_confirm_unrender"] = True
                     st.rerun()
-            with act_cols[2]:
+            with act_cols[3]:
                 if st.button(
                     f"🗑️ Borrar ({sel_count})",
                     key="hist_bulk_delete",
