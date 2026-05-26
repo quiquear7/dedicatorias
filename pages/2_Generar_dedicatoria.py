@@ -324,6 +324,55 @@ if step == 1:
                 {"name": name, "group": (extra_group or "").strip(), "contact_id": None}
             )
 
+        # Detecta nombres nuevos (escritos a mano) que ya existen como destinatario
+        # en su mismo grupo: pedimos confirmación explícita antes de añadir otra
+        # persona distinta con el mismo nombre. Si el usuario lo deja sin confirmar,
+        # esa entrada se omite y el resto sí se procesa con normalidad.
+        existing_keys = {
+            (c.name.lower(), (c.group or "").lower()) for c in contacts
+        }
+        duplicate_keys: List[tuple] = []
+        duplicate_display: Dict[tuple, tuple] = {}
+        for r in recipients:
+            if r.get("contact_id") is not None:
+                continue
+            key = (r["name"].lower(), (r.get("group") or "").lower())
+            if key in existing_keys and key not in duplicate_keys:
+                duplicate_keys.append(key)
+                duplicate_display[key] = (r["name"], r.get("group") or "")
+
+        dup_decisions: Dict[tuple, bool] = {}
+        if duplicate_keys:
+            st.warning(
+                f"⚠️ {len(duplicate_keys)} nombre(s) ya existen como destinatario en "
+                "el grupo indicado. Marca la casilla solo si **realmente** quieres "
+                "añadir otra persona distinta con el mismo nombre; si la dejas "
+                "desmarcada, esa persona se omitirá y el resto sí se procesarán."
+            )
+            for key in duplicate_keys:
+                display_name, display_group = duplicate_display[key]
+                dup_decisions[key] = st.checkbox(
+                    f"Sí, añadir otra «{display_name}» en "
+                    f"«{display_group or '(sin grupo)'}»",
+                    value=False,
+                    key=f"multi_dup_keep_{display_name}_{display_group}",
+                    help=(
+                        "Crea un destinatario nuevo aparte del existente y "
+                        "genera la dedicatoria para esta nueva persona."
+                    ),
+                )
+
+            recipients = [
+                r
+                for r in recipients
+                if r.get("contact_id") is not None
+                or (r["name"].lower(), (r.get("group") or "").lower())
+                not in duplicate_keys
+                or dup_decisions.get(
+                    (r["name"].lower(), (r.get("group") or "").lower()), False
+                )
+            ]
+
         if recipients:
             st.markdown(f"**Destinatarios seleccionados ({len(recipients)}):**")
             chips = "  ".join(
@@ -345,7 +394,18 @@ if step == 1:
             for r in recipients:
                 cid = r.get("contact_id")
                 if cid is None and save_new and r["name"]:
-                    contact = contacts_module.find_or_create(r["name"], r.get("group") or "")
+                    key = (r["name"].lower(), (r.get("group") or "").lower())
+                    if key in duplicate_keys and dup_decisions.get(key, False):
+                        # El usuario confirmó que quiere otra persona distinta
+                        # con el mismo nombre: creamos un destinatario aparte,
+                        # sin reutilizar el existente.
+                        contact = contacts_module.create_contact(
+                            r["name"], r.get("group") or ""
+                        )
+                    else:
+                        contact = contacts_module.find_or_create(
+                            r["name"], r.get("group") or ""
+                        )
                     cid = contact.id
                 final_recipients.append(
                     {"name": r["name"], "group": r.get("group") or "", "contact_id": cid}
