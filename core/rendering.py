@@ -550,18 +550,54 @@ def render_preview(
 # Imposición A4: agrupa varias tarjetas en hojas A4 para imprenta.
 # ----------------------------------------------------------------------------
 
-# Coordenadas (X, Y_desde_arriba) en mm para una cuadrícula 2×2 de tarjetas
-# 8×13 cm sobre A4 vertical (210×297 mm). Centradas con márgenes laterales y
-# verticales casi simétricos (25 mm laterales · 18 mm superior · 19 mm inferior).
-A4_2x2_POSITIONS_MM: List[Tuple[float, float]] = [
-    (25.0, 18.0),    # Tarjeta 1 — fila superior izquierda
-    (105.0, 18.0),   # Tarjeta 2 — fila superior derecha
-    (25.0, 148.0),   # Tarjeta 3 — fila inferior izquierda
-    (105.0, 148.0),  # Tarjeta 4 — fila inferior derecha
-]
-
 A4_WIDTH_MM = 210.0
 A4_HEIGHT_MM = 297.0
+
+
+def compute_centered_grid_mm(
+    card_w_mm: float,
+    card_h_mm: float,
+    page_w_mm: float = A4_WIDTH_MM,
+    page_h_mm: float = A4_HEIGHT_MM,
+    *,
+    max_cols: int = 2,
+    max_rows: int = 2,
+    gutter_mm: float = 0.0,
+) -> List[Tuple[float, float]]:
+    """Calcula las posiciones (X, Y_desde_arriba) en mm de una cuadrícula de
+    tarjetas ``card_w_mm × card_h_mm`` **centrada** en la página.
+
+    Decide cuántas columnas y filas caben de verdad (hasta ``max_cols × max_rows``)
+    y centra el bloque resultante, de modo que los márgenes sobrantes sean
+    simétricos en ambos ejes. Esa simetría es justo lo que hace que el reverso
+    impreso coincida físicamente con el anverso tras el volteo dúplex (da igual
+    si la impresora voltea por el borde largo o por el corto), y evita que la
+    fila inferior se salga de la hoja y se recorte.
+
+    Las tarjetas demasiado grandes para caber ni siquiera 1×1 se anclan en la
+    esquina (margen 0) en lugar de desbordar con márgenes negativos.
+    """
+    def _fit(count_max: int, card: float, page: float) -> int:
+        n = max(1, count_max)
+        while n > 1 and n * card + (n - 1) * gutter_mm > page + 1e-6:
+            n -= 1
+        return n
+
+    cols = _fit(max_cols, card_w_mm, page_w_mm)
+    rows = _fit(max_rows, card_h_mm, page_h_mm)
+
+    block_w = cols * card_w_mm + (cols - 1) * gutter_mm
+    block_h = rows * card_h_mm + (rows - 1) * gutter_mm
+    left = max(0.0, (page_w_mm - block_w) / 2.0)
+    top = max(0.0, (page_h_mm - block_h) / 2.0)
+
+    positions: List[Tuple[float, float]] = []
+    for r in range(rows):
+        for col in range(cols):
+            x = left + col * (card_w_mm + gutter_mm)
+            y = top + r * (card_h_mm + gutter_mm)
+            positions.append((x, y))
+    return positions
 
 
 def _draw_crop_guides(
@@ -629,18 +665,24 @@ def render_imposed_a4_pdf(
             no aplica; en ese caso no se generan hojas de reverso).
         card_width_mm, card_height_mm: tamaño físico de cada tarjeta.
         grid_positions_mm: lista de (X, Y_desde_arriba) en mm para cada hueco
-            de la cuadrícula. Por defecto, A4_2x2_POSITIONS_MM (tarjetas 8×13).
+            de la cuadrícula. Si es None, se calcula con
+            ``compute_centered_grid_mm`` a partir del tamaño real de la tarjeta,
+            centrando el bloque en la hoja y eligiendo cuántas tarjetas caben
+            (hasta 2×2 = 4 por hoja).
         include_crop_guides: si True, añade líneas grises 0.5pt en los
             márgenes para guiar el corte.
 
-    El reverso se replica idénticamente en los 4 huecos de cada hoja de
-    reverso. Las coordenadas usadas son simétricas (mismos márgenes laterales
-    a izquierda y derecha) para que tras el flip dúplex de la impresora cada
-    tarjeta del anverso coincida físicamente con su reverso.
+    El reverso se replica idénticamente en cada hueco de la hoja de reverso.
+    Como las posiciones se centran en la hoja, los márgenes sobrantes son
+    simétricos en ambos ejes; así, tras el volteo dúplex de la impresora (por
+    borde largo o corto), cada tarjeta del anverso queda físicamente sobre su
+    reverso.
     """
     from reportlab.lib.utils import ImageReader
 
-    positions = grid_positions_mm or A4_2x2_POSITIONS_MM
+    positions = grid_positions_mm or compute_centered_grid_mm(
+        card_width_mm, card_height_mm, page_width_mm, page_height_mm
+    )
     cards_per_sheet = len(positions)
     if cards_per_sheet == 0:
         raise ValueError("grid_positions_mm no puede estar vacío")
