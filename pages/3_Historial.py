@@ -281,135 +281,245 @@ with tab_pending:
                     except Exception as e:  # noqa: BLE001
                         st.warning(f"No se pudo generar preview: {e}")
 
-            st.markdown("**Selecciona qué dedicatorias renderizar:**")
-            sel_cols = st.columns([1, 1, 1, 1])
-            with sel_cols[0]:
-                if st.button(
-                    "☑️ Sólo pendientes",
-                    key="pending_sel_pending",
-                    use_container_width=True,
-                    help="Marca todas las pendientes y desmarca las ya generadas.",
-                ):
-                    for d in display_list:
-                        st.session_state[f"bulk_inc_{d.id}"] = d.is_pending
-                    st.rerun()
-            with sel_cols[1]:
-                if st.button(
-                    "☑️ Todas",
-                    key="pending_sel_all",
-                    use_container_width=True,
-                    help="Incluye también las ya generadas (se re-renderizarán).",
-                ):
-                    for d in display_list:
-                        st.session_state[f"bulk_inc_{d.id}"] = True
-                    st.rerun()
-            with sel_cols[2]:
-                if st.button(
-                    "⬜ Desmarcar todas",
-                    key="pending_sel_clear",
-                    use_container_width=True,
-                    help="Quita la selección de todas las dedicatorias de la lista.",
-                ):
-                    for d in display_list:
-                        st.session_state[f"bulk_inc_{d.id}"] = False
-                    st.rerun()
+            # Lote de generación: estado persistente entre reruns para permitir
+            # pausar/reanudar/cancelar a media tanda. Cada rerun procesa UNA
+            # dedicatoria y vuelve a hacer rerun, así el botón «⏸ Pausar» se
+            # respeta entre tarjetas (Streamlit no es preemptible dentro del
+            # mismo callback).
+            JOB_KEY = "_pending_render_job"
+            job = st.session_state.get(JOB_KEY)
 
-            head = st.columns([1, 3, 3, 4, 1])
-            head[0].markdown("**Estado**")
-            head[1].markdown("**Destinatario**")
-            head[2].markdown("**Grupo**")
-            head[3].markdown("**Texto (resumen)**")
-            head[4].markdown("**Incluir**")
+            if job:
+                total = max(1, int(job.get("total", 1)))
+                ok_n = len(job.get("ok", []))
+                err_n = len(job.get("errors", []))
+                processed = ok_n + err_n
+                finished = not job.get("remaining")
+                paused = bool(job.get("paused", False))
 
-            chosen_ids: list[str] = []
-            for d in display_list:
-                row = st.columns([1, 3, 3, 4, 1])
-                row[0].write("📄 Pendiente" if d.is_pending else "✅ Generada")
-                row[1].write(d.recipient_name)
-                row[2].write(d.recipient_group or "—")
-                preview_text = (d.final_text[:80] + "…") if len(d.final_text) > 80 else d.final_text
-                row[3].caption(preview_text)
-                included = row[4].checkbox(
-                    "incluir",
-                    value=d.is_pending,
-                    key=f"bulk_inc_{d.id}",
-                    label_visibility="collapsed",
+                if finished:
+                    status_line = "✅ Finalizado"
+                elif paused:
+                    status_line = "⏸ Pausado"
+                else:
+                    status_line = "⏳ Renderizando…"
+
+                st.progress(
+                    min(processed / total, 1.0),
+                    text=(
+                        f"{status_line} — {processed}/{total} hechas · "
+                        f"{ok_n} ok · {err_n} errores"
+                    ),
                 )
-                if included:
-                    chosen_ids.append(d.id)
 
-            st.divider()
-            cta = st.columns([2, 1, 1])
-            cta[0].markdown(
-                f"**{len(chosen_ids)}** seleccionadas para renderizar con «{chosen_template.name}»"
-            )
-            with cta[1]:
-                if st.button(
-                    "🚀 Generar seleccionadas",
-                    type="primary",
-                    disabled=not chosen_ids,
-                    use_container_width=True,
-                ):
-                    progress = st.progress(0.0, text="Renderizando...")
-                    summary = {"ok": [], "errors": []}
-                    for idx, did in enumerate(chosen_ids, start=1):
-                        try:
-                            history_module.render_pending(did, chosen_template)
-                            summary["ok"].append(did)
-                        except Exception as e:  # noqa: BLE001
-                            summary["errors"].append({"id": did, "error": str(e)})
-                        progress.progress(
-                            idx / len(chosen_ids),
-                            text=f"Renderizando {idx}/{len(chosen_ids)}...",
-                        )
-                    progress.empty()
-                    st.success(f"Generadas {len(summary['ok'])} dedicatorias.")
-                    if summary["errors"]:
-                        with st.expander(f"⚠️ {len(summary['errors'])} errores"):
-                            for err in summary["errors"]:
-                                st.code(str(err))
-                    st.rerun()
-            with cta[2]:
-                if st.button(
-                    f"🗑️ Borrar ({len(chosen_ids)})",
-                    key="pending_bulk_delete",
-                    disabled=not chosen_ids,
-                    use_container_width=True,
-                ):
-                    st.session_state["_pending_bulk_confirm_delete"] = True
-                    st.rerun()
-
-            if st.session_state.get("_pending_bulk_confirm_delete") and chosen_ids:
-                st.error(
-                    f"Vas a **borrar {len(chosen_ids)} dedicatoria(s)** del historial "
-                    "(incluyendo texto, audio y, si las hay, las tarjetas renderizadas). "
-                    "Esta acción **no se puede deshacer**."
-                )
-                cc = st.columns([1, 1, 4])
-                with cc[0]:
-                    if st.button(
-                        "🗑️ Sí, borrar",
-                        key="pending_bulk_delete_yes",
-                        type="primary",
-                    ):
-                        with st.spinner(
-                            f"Borrando {len(chosen_ids)} dedicatoria(s)..."
+                if not finished:
+                    ctrl = st.columns([1, 1, 1])
+                    with ctrl[0]:
+                        if paused:
+                            if st.button(
+                                "▶️ Reanudar",
+                                type="primary",
+                                key="job_resume",
+                                use_container_width=True,
+                            ):
+                                job["paused"] = False
+                                st.session_state[JOB_KEY] = job
+                                st.rerun()
+                        else:
+                            if st.button(
+                                "⏸ Pausar",
+                                key="job_pause",
+                                use_container_width=True,
+                                help=(
+                                    "Detiene el lote tras terminar la tarjeta "
+                                    "actual. Las ya hechas se conservan."
+                                ),
+                            ):
+                                job["paused"] = True
+                                st.session_state[JOB_KEY] = job
+                                st.rerun()
+                    with ctrl[1]:
+                        if st.button(
+                            "✋ Cancelar",
+                            key="job_cancel",
+                            use_container_width=True,
+                            help=(
+                                "Descarta el resto del lote. Las dedicatorias "
+                                "ya renderizadas quedan en «Generadas»; el "
+                                "resto sigue como Pendiente."
+                            ),
                         ):
-                            ok = 0
-                            for did in chosen_ids:
-                                try:
-                                    if history_module.delete_dedication(did):
-                                        ok += 1
-                                except Exception:
-                                    pass
-                                st.session_state.pop(f"bulk_inc_{did}", None)
-                        st.session_state.pop("_pending_bulk_confirm_delete", None)
-                        st.toast(f"{ok} dedicatoria(s) eliminada(s).")
+                            done = ok_n
+                            left = len(job.get("remaining", []))
+                            st.session_state.pop(JOB_KEY, None)
+                            st.toast(
+                                f"Generación cancelada: {done} hechas, "
+                                f"{left} sin renderizar."
+                            )
+                            st.rerun()
+                    with ctrl[2]:
+                        st.caption(
+                            "Procesa de una en una; el botón ⏸ Pausar surte "
+                            "efecto entre tarjetas."
+                        )
+                else:
+                    st.success(
+                        f"Generadas {ok_n} dedicatoria(s). "
+                        + (f"{err_n} fallaron." if err_n else "")
+                    )
+                    if job.get("errors"):
+                        with st.expander(f"⚠️ {err_n} errores"):
+                            for err in job["errors"]:
+                                st.code(str(err))
+                    if st.button("Cerrar resumen", key="job_close"):
+                        st.session_state.pop(JOB_KEY, None)
                         st.rerun()
-                with cc[1]:
-                    if st.button("✋ Cancelar", key="pending_bulk_delete_cancel"):
-                        st.session_state.pop("_pending_bulk_confirm_delete", None)
+
+                # Procesa exactamente UNA dedicatoria por rerun si el job
+                # sigue vivo y no está pausado; luego vuelve a renderizar la
+                # página para reflejar el avance y leer botones nuevos.
+                if not paused and not finished:
+                    tpl = next(
+                        (t for t in templates_all if t.id == job["template_id"]),
+                        None,
+                    )
+                    if tpl is None:
+                        job["errors"].append(
+                            {"id": "*", "error": "Plantilla no encontrada."}
+                        )
+                        job["remaining"] = []
+                        st.session_state[JOB_KEY] = job
                         st.rerun()
+                    else:
+                        did = job["remaining"][0]
+                        try:
+                            history_module.render_pending(did, tpl)
+                            job["ok"].append(did)
+                        except Exception as e:  # noqa: BLE001
+                            job["errors"].append({"id": did, "error": str(e)})
+                        job["remaining"] = job["remaining"][1:]
+                        st.session_state[JOB_KEY] = job
+                        st.rerun()
+            else:
+                st.markdown("**Selecciona qué dedicatorias renderizar:**")
+                sel_cols = st.columns([1, 1, 1, 1])
+                with sel_cols[0]:
+                    if st.button(
+                        "☑️ Sólo pendientes",
+                        key="pending_sel_pending",
+                        use_container_width=True,
+                        help="Marca todas las pendientes y desmarca las ya generadas.",
+                    ):
+                        for d in display_list:
+                            st.session_state[f"bulk_inc_{d.id}"] = d.is_pending
+                        st.rerun()
+                with sel_cols[1]:
+                    if st.button(
+                        "☑️ Todas",
+                        key="pending_sel_all",
+                        use_container_width=True,
+                        help="Incluye también las ya generadas (se re-renderizarán).",
+                    ):
+                        for d in display_list:
+                            st.session_state[f"bulk_inc_{d.id}"] = True
+                        st.rerun()
+                with sel_cols[2]:
+                    if st.button(
+                        "⬜ Desmarcar todas",
+                        key="pending_sel_clear",
+                        use_container_width=True,
+                        help="Quita la selección de todas las dedicatorias de la lista.",
+                    ):
+                        for d in display_list:
+                            st.session_state[f"bulk_inc_{d.id}"] = False
+                        st.rerun()
+
+                head = st.columns([1, 3, 3, 4, 1])
+                head[0].markdown("**Estado**")
+                head[1].markdown("**Destinatario**")
+                head[2].markdown("**Grupo**")
+                head[3].markdown("**Texto (resumen)**")
+                head[4].markdown("**Incluir**")
+
+                chosen_ids: list[str] = []
+                for d in display_list:
+                    row = st.columns([1, 3, 3, 4, 1])
+                    row[0].write("📄 Pendiente" if d.is_pending else "✅ Generada")
+                    row[1].write(d.recipient_name)
+                    row[2].write(d.recipient_group or "—")
+                    preview_text = (d.final_text[:80] + "…") if len(d.final_text) > 80 else d.final_text
+                    row[3].caption(preview_text)
+                    included = row[4].checkbox(
+                        "incluir",
+                        value=d.is_pending,
+                        key=f"bulk_inc_{d.id}",
+                        label_visibility="collapsed",
+                    )
+                    if included:
+                        chosen_ids.append(d.id)
+
+                st.divider()
+                cta = st.columns([2, 1, 1])
+                cta[0].markdown(
+                    f"**{len(chosen_ids)}** seleccionadas para renderizar con «{chosen_template.name}»"
+                )
+                with cta[1]:
+                    if st.button(
+                        "🚀 Generar seleccionadas",
+                        type="primary",
+                        disabled=not chosen_ids,
+                        use_container_width=True,
+                    ):
+                        st.session_state[JOB_KEY] = {
+                            "remaining": list(chosen_ids),
+                            "ok": [],
+                            "errors": [],
+                            "template_id": chosen_template.id,
+                            "total": len(chosen_ids),
+                            "paused": False,
+                        }
+                        st.rerun()
+                with cta[2]:
+                    if st.button(
+                        f"🗑️ Borrar ({len(chosen_ids)})",
+                        key="pending_bulk_delete",
+                        disabled=not chosen_ids,
+                        use_container_width=True,
+                    ):
+                        st.session_state["_pending_bulk_confirm_delete"] = True
+                        st.rerun()
+
+                if st.session_state.get("_pending_bulk_confirm_delete") and chosen_ids:
+                    st.error(
+                        f"Vas a **borrar {len(chosen_ids)} dedicatoria(s)** del historial "
+                        "(incluyendo texto, audio y, si las hay, las tarjetas renderizadas). "
+                        "Esta acción **no se puede deshacer**."
+                    )
+                    cc = st.columns([1, 1, 4])
+                    with cc[0]:
+                        if st.button(
+                            "🗑️ Sí, borrar",
+                            key="pending_bulk_delete_yes",
+                            type="primary",
+                        ):
+                            with st.spinner(
+                                f"Borrando {len(chosen_ids)} dedicatoria(s)..."
+                            ):
+                                ok = 0
+                                for did in chosen_ids:
+                                    try:
+                                        if history_module.delete_dedication(did):
+                                            ok += 1
+                                    except Exception:
+                                        pass
+                                    st.session_state.pop(f"bulk_inc_{did}", None)
+                            st.session_state.pop("_pending_bulk_confirm_delete", None)
+                            st.toast(f"{ok} dedicatoria(s) eliminada(s).")
+                            st.rerun()
+                    with cc[1]:
+                        if st.button("✋ Cancelar", key="pending_bulk_delete_cancel"):
+                            st.session_state.pop("_pending_bulk_confirm_delete", None)
+                            st.rerun()
 
         st.divider()
         st.markdown("**O actúa individualmente:**")
