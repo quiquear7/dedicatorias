@@ -644,30 +644,6 @@ def _draw_crop_guides(
     c.restoreState()
 
 
-# Eje de espejado que la impresora aplica al reverso según cómo voltee la hoja
-# en dúplex: por el borde largo (libro) invierte izquierda-derecha; por el borde
-# corto (calendario) invierte arriba-abajo. Para contrarrestarlo pre-espejamos
-# el reverso en el mismo eje, de modo que tras el volteo se lea correctamente.
-_BACK_FLIP_AXIS: Dict[str, "Image.Transpose"] = {
-    "long": Image.Transpose.FLIP_LEFT_RIGHT,   # volteo por borde largo
-    "short": Image.Transpose.FLIP_TOP_BOTTOM,  # volteo por borde corto
-}
-
-
-def _flip_png_bytes(png_bytes: bytes, back_flip: str) -> bytes:
-    """Devuelve el PNG del reverso pre-espejado para el modo de volteo dúplex
-    indicado ('long' | 'short'). Con 'none' (o un valor desconocido) lo deja
-    intacto. El espejo es su propio inverso, así que al volverlo a espejar la
-    impresora el contenido queda en su orientación original."""
-    transpose = _BACK_FLIP_AXIS.get(back_flip)
-    if transpose is None:
-        return png_bytes
-    with Image.open(io.BytesIO(png_bytes)) as im:
-        buf = io.BytesIO()
-        im.transpose(transpose).save(buf, format="PNG")
-        return buf.getvalue()
-
-
 def render_imposed_a4_pdf(
     front_pngs: List[bytes],
     back_png: Optional[bytes] = None,
@@ -678,7 +654,6 @@ def render_imposed_a4_pdf(
     page_width_mm: float = A4_WIDTH_MM,
     page_height_mm: float = A4_HEIGHT_MM,
     include_crop_guides: bool = False,
-    back_flip: str = "long",
 ) -> bytes:
     """Genera un único PDF A4 con las tarjetas dispuestas en cuadrícula 2×2
     (4 tarjetas por hoja), intercalando hojas de anverso y reverso para
@@ -696,17 +671,12 @@ def render_imposed_a4_pdf(
             (hasta 2×2 = 4 por hoja).
         include_crop_guides: si True, añade líneas grises 0.5pt en los
             márgenes para guiar el corte.
-        back_flip: eje en el que se pre-espeja el reverso para compensar el
-            volteo de la impresora: 'long' (dúplex por borde largo, espejo
-            horizontal — lo habitual en vertical), 'short' (por borde corto,
-            espejo vertical) o 'none' (sin espejar).
 
     El reverso se replica idénticamente en cada hueco de la hoja de reverso.
     Como las posiciones se centran en la hoja, los márgenes sobrantes son
     simétricos en ambos ejes; así, tras el volteo dúplex de la impresora (por
     borde largo o corto), cada tarjeta del anverso queda físicamente sobre su
-    reverso. Además se pre-espeja el contenido del reverso (``back_flip``) para
-    que tras ese volteo el dibujo se lea en su orientación correcta.
+    reverso.
     """
     from reportlab.lib.utils import ImageReader
 
@@ -729,12 +699,8 @@ def render_imposed_a4_pdf(
     c = rl_canvas.Canvas(out, pagesize=(page_w_pt, page_h_pt))
 
     # ReportLab necesita un ImageReader nuevo por uso fiable; el reverso se
-    # repite muchas veces, así que lo cacheamos (ya pre-espejado).
-    back_reader = (
-        ImageReader(io.BytesIO(_flip_png_bytes(back_png, back_flip)))
-        if back_png
-        else None
-    )
+    # repite muchas veces, así que lo cacheamos.
+    back_reader = ImageReader(io.BytesIO(back_png)) if back_png else None
 
     total = len(front_pngs)
     if total == 0:

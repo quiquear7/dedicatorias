@@ -88,9 +88,7 @@ def _render_dedication_text_block(d, *, key_prefix: str = "") -> None:
 
 
 @st.cache_data(show_spinner="Componiendo PDF A4 imprenta…")
-def _build_a4_imposed_pdf(
-    signature: tuple, include_crop_guides: bool, back_flip: str = "long"
-) -> tuple:
+def _build_a4_imposed_pdf(signature: tuple, include_crop_guides: bool) -> tuple:
     """Compone un único PDF A4 con todas las dedicatorias indicadas
     intercalando anversos y reversos (cuadrícula 2×2). `signature` es una
     tupla inmutable de (id, png_path, back_png_path, card_w_mm, card_h_mm,
@@ -172,7 +170,6 @@ def _build_a4_imposed_pdf(
         card_width_mm=card_w or 80.0,
         card_height_mm=card_h or 130.0,
         include_crop_guides=include_crop_guides,
-        back_flip=back_flip,
     )
     return pdf_bytes, missing, warning
 
@@ -669,24 +666,6 @@ with tab_rendered:
                     "de las tarjetas."
                 ),
             )
-            st.selectbox(
-                "🔄 Volteo dúplex del reverso",
-                options=["long", "short", "none"],
-                index=0,
-                key="hist_a4_back_flip",
-                format_func=lambda v: {
-                    "long": "Borde largo (libro) — espejo horizontal",
-                    "short": "Borde corto (calendario) — espejo vertical",
-                    "none": "Sin espejar el reverso",
-                }[v],
-                help=(
-                    "Pre-espeja el reverso para que, tras el volteo dúplex de la "
-                    "impresora, su contenido se lea bien. Elige según cómo voltee "
-                    "tu impresora: 'borde largo' es lo habitual al imprimir A4 "
-                    "vertical a doble cara. Si el reverso sale del revés, prueba "
-                    "el otro modo."
-                ),
-            )
 
             # Fila 2: acciones — dos modos de exportación + utilidades.
             act_cols = st.columns([1, 1, 1, 1])
@@ -750,7 +729,6 @@ with tab_rendered:
                         a4_pdf_bytes, a4_missing, a4_warning = _build_a4_imposed_pdf(
                             a4_signature,
                             st.session_state.get("hist_a4_crop_guides", False),
-                            st.session_state.get("hist_a4_back_flip", "long"),
                         )
                         st.download_button(
                             f"📄 PDF A4 imprenta ({sel_count})",
