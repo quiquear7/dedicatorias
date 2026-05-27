@@ -18,32 +18,41 @@ def _safe_filename(name: str) -> str:
     return cleaned.replace(" ", "_") or "tarjeta"
 
 
-def _render_dedication_text_block(d) -> None:
+def _render_dedication_text_block(d, *, key_prefix: str = "") -> None:
     """Bloque común para ver o editar el texto, nombre y grupo de una
     dedicatoria. Se usa en los expanders individuales de Pendientes y de
     Generadas. La transcripción cruda y otras acciones se manejan fuera.
+
+    Una dedicatoria ya generada puede aparecer en las dos pestañas a la
+    vez (en la lista de Pendientes con la marca «✅ Generada» y en la
+    lista de Generadas), así que cada llamada recibe un `key_prefix`
+    distinto para evitar colisiones de claves de widget en Streamlit.
     """
-    edit_key = f"_edit_{d.id}"
+    edit_key = f"_edit_{key_prefix}{d.id}"
     if st.session_state.get(edit_key):
         new_name = st.text_input(
             "Nombre del destinatario",
             value=d.recipient_name,
-            key=f"edit_name_{d.id}",
+            key=f"edit_name_{key_prefix}{d.id}",
         )
         new_group = st.text_input(
             "Grupo",
             value=d.recipient_group or "",
-            key=f"edit_group_{d.id}",
+            key=f"edit_group_{key_prefix}{d.id}",
         )
         new_text = st.text_area(
             "Texto de la dedicatoria",
             value=d.final_text,
-            key=f"edit_text_{d.id}",
+            key=f"edit_text_{key_prefix}{d.id}",
             height=140,
         )
         ecols = st.columns([1, 1, 4])
         with ecols[0]:
-            if st.button("💾 Guardar", key=f"edit_save_{d.id}", type="primary"):
+            if st.button(
+                "💾 Guardar",
+                key=f"edit_save_{key_prefix}{d.id}",
+                type="primary",
+            ):
                 cleaned_name = (new_name or "").strip()
                 if not cleaned_name:
                     st.error("El nombre del destinatario no puede estar vacío.")
@@ -63,7 +72,7 @@ def _render_dedication_text_block(d) -> None:
                         )
                     st.rerun()
         with ecols[1]:
-            if st.button("✋ Cancelar", key=f"edit_cancel_{d.id}"):
+            if st.button("✋ Cancelar", key=f"edit_cancel_{key_prefix}{d.id}"):
                 st.session_state.pop(edit_key, None)
                 st.rerun()
     else:
@@ -71,7 +80,7 @@ def _render_dedication_text_block(d) -> None:
         st.markdown(f"> {d.final_text}")
         if st.button(
             "✏️ Editar texto, nombre y grupo",
-            key=f"edit_btn_{d.id}",
+            key=f"edit_btn_{key_prefix}{d.id}",
             help="Modifica el texto, el nombre del destinatario o el grupo.",
         ):
             st.session_state[edit_key] = True
@@ -379,7 +388,7 @@ with tab_pending:
             with st.expander(
                 f"{status_icon} {d.recipient_name} · {d.recipient_group or '(sin grupo)'} · {d.created_at[:10]}"
             ):
-                _render_dedication_text_block(d)
+                _render_dedication_text_block(d, key_prefix="pending_")
                 if d.input_mode == "audio":
                     with st.expander("Transcripción cruda"):
                         st.text(d.raw_input)
@@ -734,7 +743,7 @@ with tab_rendered:
                         except Exception as e:  # noqa: BLE001
                             st.warning(f"No se pudo cargar la imagen: {e}")
                 with cols[1]:
-                    _render_dedication_text_block(d)
+                    _render_dedication_text_block(d, key_prefix="rendered_")
                     if d.input_mode == "audio":
                         with st.expander("Transcripción cruda"):
                             st.text(d.raw_input)
