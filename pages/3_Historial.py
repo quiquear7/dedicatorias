@@ -91,13 +91,20 @@ def _render_dedication_text_block(d, *, key_prefix: str = "") -> None:
 def _build_a4_imposed_pdf(signature: tuple, include_crop_guides: bool) -> tuple:
     """Compone un único PDF A4 con todas las dedicatorias indicadas
     intercalando anversos y reversos (cuadrícula 2×2). `signature` es una
-    tupla inmutable de (id, png_path, back_png_path, card_w_mm, card_h_mm) por
-    cada tarjeta seleccionada para que Streamlit pueda cachear el resultado.
+    tupla inmutable de (id, png_path, back_png_path, card_w_mm, card_h_mm,
+    template_id) por cada tarjeta seleccionada para que Streamlit pueda
+    cachear el resultado.
+
+    Si ninguna dedicatoria seleccionada trajera el reverso ya renderizado
+    (caso típico: se añadió el reverso a la plantilla *después* de
+    generarlas), caemos al reverso de la plantilla actual y lo renderizamos
+    al vuelo para no obligar al usuario a re-renderizar 300 tarjetas.
 
     Devuelve `(pdf_bytes, missing_count, warning_text_or_None)`.
     """
     from core.config import get_storage as _get_storage
     from core import rendering as rendering_module
+    from core import templates as templates_module
 
     storage = _get_storage()
     front_bytes_list: list = []
@@ -106,12 +113,15 @@ def _build_a4_imposed_pdf(signature: tuple, include_crop_guides: bool) -> tuple:
     card_h: float | None = None
     missing = 0
     sizes: set = set()
+    template_ids_seen: list = []
 
-    for _did, png_path, back_path, w_mm, h_mm in signature:
+    for _did, png_path, back_path, w_mm, h_mm, template_id in signature:
         if w_mm and h_mm:
             sizes.add((round(float(w_mm), 1), round(float(h_mm), 1)))
             if card_w is None:
                 card_w, card_h = float(w_mm), float(h_mm)
+        if template_id and template_id not in template_ids_seen:
+            template_ids_seen.append(template_id)
         if not png_path:
             missing += 1
             continue
@@ -126,12 +136,32 @@ def _build_a4_imposed_pdf(signature: tuple, include_crop_guides: bool) -> tuple:
             except Exception:  # noqa: BLE001
                 back_bytes = None
 
+    fell_back_to_template_back = False
+    if back_bytes is None:
+        for tid in template_ids_seen:
+            tpl = templates_module.get_template(tid)
+            if tpl and tpl.has_back:
+                try:
+                    back_bytes = rendering_module.render_back_png(tpl)
+                    fell_back_to_template_back = True
+                    if card_w is None:
+                        card_w, card_h = float(tpl.width_mm), float(tpl.height_mm)
+                    break
+                except Exception:  # noqa: BLE001
+                    back_bytes = None
+
     warning = None
     if len(sizes) > 1:
         warning = (
             "⚠️ Hay tarjetas de varios tamaños físicos en la selección. "
             f"Se usa el de la primera ({card_w:.0f}×{card_h:.0f} mm). "
             "Para imprenta agrupa selecciones del mismo formato."
+        )
+    elif fell_back_to_template_back:
+        warning = (
+            "ℹ️ Ninguna de las dedicatorias seleccionadas guardaba el reverso "
+            "(se generaron antes de añadirlo a la plantilla). He cogido el "
+            "reverso actual de la plantilla para componer el A4."
         )
 
     pdf_bytes = rendering_module.render_imposed_a4_pdf(
@@ -581,6 +611,7 @@ with tab_rendered:
                             d.card_back_png_path,
                             (d.template_snapshot or {}).get("width_mm"),
                             (d.template_snapshot or {}).get("height_mm"),
+                            d.template_id,
                         )
                         for d in selected
                     )
