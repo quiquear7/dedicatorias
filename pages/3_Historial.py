@@ -217,7 +217,7 @@ with tab_pending:
             chosen_template = templates_all[tlabels.index(tchoice)]
 
             # Vista previa: cualquiera de la lista combinada.
-            with st.expander("👁️ Vista previa con esta plantilla", expanded=True):
+            with st.expander("👁️ Vista previa con esta plantilla", expanded=False):
                 preview_labels = [
                     f"{'📄' if p.is_pending else '✅'} {p.recipient_name} — "
                     f"{p.final_text[:40]}{'…' if len(p.final_text) > 40 else ''}"
