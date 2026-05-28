@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from functools import lru_cache
 from typing import Optional
 
-__version__ = "0.7.9"
+__version__ = "0.7.10"
 
 _REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 

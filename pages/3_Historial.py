@@ -688,8 +688,10 @@ with tab_rendered:
                         "PDF/PNG renderizado pero conserva el texto para re-renderizar."
                     ),
                 ):
+                    # Sin st.rerun(): si se aborta el run antes de renderizar los
+                    # checkboxes sel_<id> (que están más abajo), Streamlit limpia
+                    # su session_state y selected vuelve a quedar vacío.
                     st.session_state["_hist_bulk_confirm_unrender"] = True
-                    st.rerun()
             with act_cols[2]:
                 if st.button(
                     f"🗑️ Borrar ({sel_count})",
@@ -698,7 +700,6 @@ with tab_rendered:
                     use_container_width=True,
                 ):
                     st.session_state["_hist_bulk_confirm_delete"] = True
-                    st.rerun()
 
             # Confirmación: mover a pendientes
             if st.session_state.get("_hist_bulk_confirm_unrender") and selected:
