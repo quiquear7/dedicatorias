@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import io
-import zipfile
 from datetime import datetime
 
 import streamlit as st
@@ -11,11 +9,6 @@ from core import templates as templates_module
 from core.auth import logout_button, require_login
 from core.config import get_config, get_storage
 from core.rendering import render_preview
-
-
-def _safe_filename(name: str) -> str:
-    cleaned = (name or "").replace("/", "_").replace("\\", "_").strip()
-    return cleaned.replace(" ", "_") or "tarjeta"
 
 
 def _render_dedication_text_block(d, *, key_prefix: str = "") -> None:
@@ -173,39 +166,6 @@ def _build_a4_imposed_pdf(signature: tuple, include_crop_guides: bool) -> tuple:
     )
     return pdf_bytes, missing, warning
 
-
-@st.cache_data(show_spinner="Construyendo ZIP…")
-def _build_bulk_zip(signature: tuple) -> tuple:
-    """Genera un ZIP con las dedicatorias indicadas. `signature` es una tupla
-    inmutable (id, pdf_path, png_path, back_png_path, recipient_name) por
-    cada dedicatoria, así Streamlit cachea el resultado mientras no cambie
-    la selección.
-
-    Devuelve `(zip_bytes, missing_count)`.
-    """
-    from core.config import get_storage
-
-    storage = get_storage()
-    zip_buf = io.BytesIO()
-    missing = 0
-    used_names: dict = {}
-    with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        for did, pdf_path, png_path, back_path, recipient_name in signature:
-            base_slug = _safe_filename(recipient_name)
-            used_names[base_slug] = used_names.get(base_slug, 0) + 1
-            slug = base_slug if used_names[base_slug] == 1 else f"{base_slug}_{did[:8]}"
-            for src_path, dst_name in (
-                (pdf_path, f"dedicatoria_{slug}.pdf"),
-                (png_path, f"dedicatoria_{slug}_frente.png"),
-                (back_path, f"dedicatoria_{slug}_reverso.png"),
-            ):
-                if not src_path:
-                    continue
-                try:
-                    zf.writestr(dst_name, storage.get(src_path))
-                except Exception:  # noqa: BLE001
-                    missing += 1
-    return zip_buf.getvalue(), missing
 
 st.set_page_config(page_title="Historial", page_icon="📜", layout="wide")
 require_login()
@@ -667,51 +627,9 @@ with tab_rendered:
                 ),
             )
 
-            # Fila 2: acciones — dos modos de exportación + utilidades.
-            act_cols = st.columns([1, 1, 1, 1])
+            # Fila 2: acciones — exportación A4 + utilidades.
+            act_cols = st.columns([1, 1, 1])
             with act_cols[0]:
-                # ZIP de PDFs individuales (un PDF por dedicatoria, tamaño de
-                # tarjeta original). Construye eagerly y cacheado.
-                if sel_count > 0:
-                    signature = tuple(
-                        (
-                            d.id,
-                            d.card_pdf_path,
-                            d.card_png_path,
-                            d.card_back_png_path,
-                            d.recipient_name,
-                        )
-                        for d in selected
-                    )
-                    try:
-                        zip_bytes, missing = _build_bulk_zip(signature)
-                        st.download_button(
-                            f"📦 ZIP individuales ({sel_count})",
-                            data=zip_bytes,
-                            file_name="dedicatorias.zip",
-                            mime="application/zip",
-                            key="hist_bulk_zip_dl",
-                            type="primary",
-                            use_container_width=True,
-                            help=(
-                                "Descarga un ZIP con un PDF por dedicatoria al "
-                                "tamaño original de la tarjeta."
-                            ),
-                        )
-                        if missing:
-                            st.caption(
-                                f"⚠️ {missing} archivo(s) no se han podido leer del almacenamiento."
-                            )
-                    except Exception as e:  # noqa: BLE001
-                        st.error(f"No se pudo construir el ZIP: {e}")
-                else:
-                    st.button(
-                        "📦 ZIP individuales (0)",
-                        key="hist_bulk_zip_dl_disabled",
-                        disabled=True,
-                        use_container_width=True,
-                    )
-            with act_cols[1]:
                 # PDF A4 con imposición 2×2 + reverso intercalado.
                 if sel_count > 0:
                     a4_signature = tuple(
@@ -759,7 +677,7 @@ with tab_rendered:
                         disabled=True,
                         use_container_width=True,
                     )
-            with act_cols[2]:
+            with act_cols[1]:
                 if st.button(
                     f"🔄 A pendientes ({sel_count})",
                     key="hist_bulk_unrender",
@@ -772,7 +690,7 @@ with tab_rendered:
                 ):
                     st.session_state["_hist_bulk_confirm_unrender"] = True
                     st.rerun()
-            with act_cols[3]:
+            with act_cols[2]:
                 if st.button(
                     f"🗑️ Borrar ({sel_count})",
                     key="hist_bulk_delete",
@@ -858,7 +776,7 @@ with tab_rendered:
                     " ",
                     key=f"sel_{d.id}",
                     label_visibility="collapsed",
-                    help="Marcar para acciones masivas (descargar ZIP, mover a pendientes, borrar).",
+                    help="Marcar para acciones masivas (PDF A4, mover a pendientes, borrar).",
                 )
             with row[1]:
                 expander = st.expander(f"{d.created_at[:10]} · {title}")
