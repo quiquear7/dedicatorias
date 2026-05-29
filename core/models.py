@@ -171,6 +171,10 @@ class Dedication:
     card_pdf_path: Optional[str] = None
     card_png_path: Optional[str] = None
     card_back_png_path: Optional[str] = None
+    # PNGs adicionales cuando la dedicatoria se ha tenido que partir en varias
+    # tarjetas porque no cabía. El primero sigue en `card_png_path` (parte 1) y
+    # aquí van la parte 2 en adelante en orden. Vacío en el caso normal.
+    card_extra_png_paths: List[str] = field(default_factory=list)
     contact_id: Optional[str] = None
     audio_path: Optional[str] = None
     is_generic: bool = False
@@ -202,6 +206,7 @@ class Dedication:
             card_pdf_path=data.get("card_pdf_path"),
             card_png_path=data.get("card_png_path"),
             card_back_png_path=data.get("card_back_png_path"),
+            card_extra_png_paths=list(data.get("card_extra_png_paths", [])),
             contact_id=data.get("contact_id"),
             audio_path=data.get("audio_path"),
             is_generic=bool(data.get("is_generic", False)),

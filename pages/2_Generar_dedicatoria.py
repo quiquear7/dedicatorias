@@ -22,7 +22,7 @@ from core.correction import (
 )
 from core.diff import html_diff
 from core.models import Contact, Template
-from core.rendering import render_back_png, render_pdf, render_png, render_preview
+from core.rendering import render_dedication_parts, render_preview
 from core.transcription import transcribe
 
 st.set_page_config(page_title="Generar dedicatoria", page_icon="✍️", layout="wide")
@@ -925,6 +925,7 @@ elif step == 5:
         try:
             text_overflow = False
             name_overflow = False
+            split_recipients: List[str] = []  # destinatarios cuya dedicatoria se tuvo que partir
             audio_bytes = (
                 st.session_state.get("audio_bytes")
                 if st.session_state["input_mode"] == "audio"
@@ -938,16 +939,22 @@ elif step == 5:
                     i / max(1, len(recipients_now)),
                     text=f"Renderizando «{name}» ({i + 1}/{len(recipients_now)})...",
                 )
-                pdf_bytes, pdf_warn = render_pdf(
+                result = render_dedication_parts(
                     template,
                     name,
                     st.session_state["final_text"],
                     include_back=include_back,
                 )
-                png_bytes, png_warn = render_png(template, name, st.session_state["final_text"])
-                back_png_bytes = render_back_png(template) if include_back else None
-                text_overflow = text_overflow or pdf_warn.get("text_overflow") or png_warn.get("text_overflow")
-                name_overflow = name_overflow or pdf_warn.get("name_overflow") or png_warn.get("name_overflow")
+                fronts: List[bytes] = result["fronts"]
+                back_png_bytes = result["back"]
+                pdf_bytes: bytes = result["pdf"]
+                warn = result["warnings"]
+                if warn.get("text_overflow"):
+                    text_overflow = True
+                if warn.get("name_overflow"):
+                    name_overflow = True
+                if warn.get("text_split"):
+                    split_recipients.append(f"{name} ({warn.get('parts_count', len(fronts))} partes)")
 
                 saved = history_module.save_generated(
                     template=template,
@@ -959,8 +966,9 @@ elif step == 5:
                     corrected_text=st.session_state["corrected_text"],
                     final_text=st.session_state["final_text"],
                     pdf_bytes=pdf_bytes,
-                    png_bytes=png_bytes,
+                    png_bytes=fronts[0],
                     back_png_bytes=back_png_bytes,
+                    extra_png_bytes=fronts[1:] if len(fronts) > 1 else None,
                     # Solo guardamos el audio en la primera para no duplicarlo
                     audio_bytes=audio_bytes if i == 0 else None,
                     is_generic=st.session_state["is_generic"],
@@ -971,14 +979,21 @@ elif step == 5:
                         "recipient_group": r.get("group") or "",
                         "dedication_id": saved.id,
                         "pdf": pdf_bytes,
-                        "png": png_bytes,
+                        "png": fronts[0],
+                        "fronts": fronts,  # todas las partes (>=1)
                         "back_png": back_png_bytes,
                     }
                 )
             progress.progress(1.0, text="Listo.")
             progress.empty()
+            if split_recipients:
+                st.info(
+                    "ℹ️ El texto era demasiado largo y se ha partido en varias tarjetas para: "
+                    + ", ".join(split_recipients)
+                    + ". El PDF combinado las incluye en orden (frente+reverso por cada parte)."
+                )
             if text_overflow:
-                st.warning("⚠️ El texto no cabe completamente en la zona definida. Considera reducir el tamaño de fuente o ampliar la zona en la plantilla.")
+                st.warning("⚠️ Aún tras partir, el texto no cabe en alguna parte. Revisa el tamaño de fuente o la zona en la plantilla.")
             if name_overflow:
                 st.warning("⚠️ El nombre no cabe en su zona en alguna tarjeta.")
 
@@ -1015,22 +1030,46 @@ elif step == 5:
         active_idx = 0
 
     active = rendered_items[active_idx]
+    fronts = active.get("fronts") or [active["png"]]
+    multi_part = len(fronts) > 1
+    if multi_part:
+        st.caption(
+            f"📑 Esta dedicatoria se ha dividido en **{len(fronts)} tarjetas** "
+            "porque el texto no cabía. En todas aparece el nombre arriba."
+        )
 
-    # Vista de las dos caras si hay reverso, o sólo el frente.
+    # Vista de cada parte (frente) y, si hay, una pestaña para el reverso compartido.
+    front_labels = [f"📄 Parte {i + 1}" if multi_part else "📄 Frente (con texto)" for i in range(len(fronts))]
+    tab_labels = list(front_labels)
     if active["back_png"]:
-        tab_front, tab_back = st.tabs(["📄 Frente (con texto)", "🔄 Reverso"])
-        with tab_front:
-            st.image(active["png"], use_container_width=True, caption=f"Frente — {active['recipient_name']}")
-        with tab_back:
-            st.image(active["back_png"], use_container_width=True, caption="Reverso")
-    else:
+        tab_labels.append("🔄 Reverso")
+    tabs = st.tabs(tab_labels) if len(tab_labels) > 1 else None
+    if tabs is None:
         st.image(active["png"], use_container_width=True, caption=f"Tarjeta — {active['recipient_name']}")
+    else:
+        for idx, front in enumerate(fronts):
+            with tabs[idx]:
+                caption = (
+                    f"Parte {idx + 1}/{len(fronts)} — {active['recipient_name']}"
+                    if multi_part
+                    else f"Frente — {active['recipient_name']}"
+                )
+                st.image(front, use_container_width=True, caption=caption)
+        if active["back_png"]:
+            with tabs[-1]:
+                st.image(active["back_png"], use_container_width=True, caption="Reverso (compartido)")
 
     slug = _safe_filename(active["recipient_name"])
-    n_cols = 3 if active["back_png"] else 2
+    has_back_active = bool(active["back_png"])
+    n_cols = 2 + (1 if has_back_active else 0) + (1 if multi_part else 0)
     cols = st.columns(n_cols)
-    with cols[0]:
-        label = "⬇️ PDF (frente + reverso)" if active["back_png"] else "⬇️ Descargar PDF (imprenta)"
+    col_idx = 0
+    with cols[col_idx]:
+        label = (
+            "⬇️ PDF (todas las partes)"
+            if multi_part
+            else ("⬇️ PDF (frente + reverso)" if has_back_active else "⬇️ Descargar PDF (imprenta)")
+        )
         st.download_button(
             label,
             data=active["pdf"],
@@ -1039,17 +1078,20 @@ elif step == 5:
             use_container_width=True,
             key=f"dl_pdf_{active_idx}",
         )
-    with cols[1]:
+    col_idx += 1
+    with cols[col_idx]:
+        png_label = "⬇️ PNG parte 1 (300 dpi)" if multi_part else "⬇️ PNG frente (300 dpi)"
         st.download_button(
-            "⬇️ PNG frente (300 dpi)",
-            data=active["png"],
+            png_label,
+            data=fronts[0],
             file_name=f"dedicatoria_{slug}_frente.png",
             mime="image/png",
             use_container_width=True,
             key=f"dl_png_{active_idx}",
         )
-    if active["back_png"]:
-        with cols[2]:
+    col_idx += 1
+    if has_back_active:
+        with cols[col_idx]:
             st.download_button(
                 "⬇️ PNG reverso (300 dpi)",
                 data=active["back_png"],
@@ -1057,6 +1099,23 @@ elif step == 5:
                 mime="image/png",
                 use_container_width=True,
                 key=f"dl_back_{active_idx}",
+            )
+        col_idx += 1
+    if multi_part:
+        with cols[col_idx]:
+            parts_zip = io.BytesIO()
+            with zipfile.ZipFile(parts_zip, "w", zipfile.ZIP_DEFLATED) as pzf:
+                for pidx, front in enumerate(fronts, start=1):
+                    pzf.writestr(f"dedicatoria_{slug}_parte_{pidx}.png", front)
+                if active["back_png"]:
+                    pzf.writestr(f"dedicatoria_{slug}_reverso.png", active["back_png"])
+            st.download_button(
+                f"⬇️ ZIP partes ({len(fronts)})",
+                data=parts_zip.getvalue(),
+                file_name=f"dedicatoria_{slug}_partes.zip",
+                mime="application/zip",
+                use_container_width=True,
+                key=f"dl_parts_zip_{active_idx}",
             )
 
     if multi:
@@ -1074,7 +1133,12 @@ elif step == 5:
                     else f"{base_slug}_{it['dedication_id'][:8]}"
                 )
                 zf.writestr(f"dedicatoria_{s}.pdf", it["pdf"])
-                zf.writestr(f"dedicatoria_{s}_frente.png", it["png"])
+                it_fronts = it.get("fronts") or [it["png"]]
+                if len(it_fronts) == 1:
+                    zf.writestr(f"dedicatoria_{s}_frente.png", it_fronts[0])
+                else:
+                    for pidx, front in enumerate(it_fronts, start=1):
+                        zf.writestr(f"dedicatoria_{s}_parte_{pidx}.png", front)
                 if it["back_png"]:
                     zf.writestr(f"dedicatoria_{s}_reverso.png", it["back_png"])
         st.download_button(

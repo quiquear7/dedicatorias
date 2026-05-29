@@ -483,6 +483,202 @@ def render_png(
     return buffer.getvalue(), warnings
 
 
+def _text_fits_in_zone(text: str, template: Template, dpi: int = DEFAULT_DPI) -> bool:
+    """¿El texto cabe entero en `template.text_zone` aplicando el auto-ajuste
+    (si la plantilla tiene `font_size_min_pt`)? Misma lógica que usa el render
+    real para decidir si se trunca o no.
+    """
+    if not text or not text.strip():
+        return True
+    zone = template.text_zone
+    style = template.text_style
+    zone_w_px = mm_to_px(zone.width_mm, dpi)
+    zone_h_px = mm_to_px(zone.height_mm, dpi)
+    font, lines, line_h = _fit_pillow_font(text, style, zone_w_px, zone_h_px, dpi)
+    max_lines = max(1, int(zone_h_px // max(line_h, 1)))
+    if len(lines) > max_lines:
+        return False
+    for line in lines:
+        if line and font.getlength(line) > zone_w_px:
+            return False
+    return True
+
+
+def _lines_to_paragraph_text(lines: List[str]) -> str:
+    """Reconstruye un bloque de texto a partir de líneas wrappeadas,
+    preservando saltos de párrafo (líneas vacías) pero re-uniendo las
+    líneas de un mismo párrafo con espacios para que el renderer pueda
+    re-wrapppearlas a su gusto.
+    """
+    paragraphs: List[str] = []
+    current: List[str] = []
+    for line in lines:
+        if line.strip():
+            current.append(line.strip())
+        else:
+            if current:
+                paragraphs.append(" ".join(current))
+                current = []
+            paragraphs.append("")
+    if current:
+        paragraphs.append(" ".join(current))
+    compacted: List[str] = []
+    for line in paragraphs:
+        if line == "" and compacted and compacted[-1] == "":
+            continue
+        compacted.append(line)
+    return "\n".join(compacted).strip()
+
+
+def split_text_to_fit(
+    template: Template, text: str, *, dpi: int = DEFAULT_DPI
+) -> List[str]:
+    """Devuelve una lista de trozos de `text` tal que cada uno cabe en la
+    zona de texto de la plantilla.
+
+    Si el texto entero cabe (con el auto-ajuste hasta `font_size_min_pt`),
+    devuelve `[text]` y no se parte nada.
+
+    Si no cabe, se hace wrap del texto usando el **tamaño mínimo permitido**
+    (la zona más densa posible) y las líneas resultantes se agrupan en
+    bloques que quepan en la zona, prefiriendo cortar al final de una frase
+    (`.`, `!`, `?`) para no dejar oraciones partidas a medias.
+    """
+    from dataclasses import replace
+
+    text = text or ""
+    if not text.strip():
+        return [text]
+    if _text_fits_in_zone(text, template, dpi):
+        return [text]
+
+    zone = template.text_zone
+    style = template.text_style
+    zone_w_px = mm_to_px(zone.width_mm, dpi)
+    zone_h_px = mm_to_px(zone.height_mm, dpi)
+
+    min_pt = style.font_size_min_pt if (style.font_size_min_pt and style.font_size_min_pt > 0) else style.font_size_pt
+    work_style = replace(style, font_size_pt=float(min_pt))
+    work_font = _load_pillow_font(work_style, dpi)
+    work_line_h = _measure_pillow_line_height(work_font, style.line_height)
+    work_lines = _wrap_pillow(text, work_font, zone_w_px)
+    if not work_lines:
+        return [text]
+
+    lines_per_card = max(1, int(zone_h_px // max(work_line_h, 1)))
+
+    parts: List[str] = []
+    i = 0
+    while i < len(work_lines):
+        end = min(i + lines_per_card, len(work_lines))
+        chunk = work_lines[i:end]
+        # Intenta no cortar en mitad de una frase: si no es el último trozo,
+        # busca hacia atrás el último final de frase (sin dejar el chunk vacío).
+        if end < len(work_lines):
+            for j in range(len(chunk) - 1, 0, -1):
+                if chunk[j - 1].rstrip().endswith((".", "!", "?")):
+                    chunk = chunk[:j]
+                    break
+        if not chunk:
+            chunk = work_lines[i:i + 1]
+        part_text = _lines_to_paragraph_text(chunk)
+        if part_text:
+            parts.append(part_text)
+        i += len(chunk)
+    return parts or [text]
+
+
+def render_dedication_parts(
+    template: Template,
+    recipient: str,
+    dedication: str,
+    *,
+    dpi: int = DEFAULT_DPI,
+    include_back: bool = True,
+) -> dict:
+    """Renderiza una dedicatoria partiéndola en N tarjetas si no cabe entera.
+
+    Devuelve un dict con:
+        ``parts``: List[str] — los trozos de texto efectivamente usados.
+        ``fronts``: List[bytes] — un PNG (300 dpi por defecto) del frente por trozo.
+            En cada uno se imprime el `recipient` arriba (cuando la plantilla
+            tiene `name_zone`), así que el nombre aparece en TODAS las tarjetas.
+        ``back``: Optional[bytes] — PNG del reverso compartido (o None si no aplica).
+        ``pdf``: bytes — PDF combinado con páginas (frente1, [reverso], frente2,
+            [reverso], …) listo para impresión dúplex tarjeta a tarjeta.
+        ``warnings``: dict — flags útiles para la UI (`text_split`,
+            `parts_count`, `name_overflow`, `text_overflow`).
+    """
+    parts = split_text_to_fit(template, dedication, dpi=dpi)
+    warnings: dict = {}
+    if len(parts) > 1:
+        warnings["text_split"] = True
+        warnings["parts_count"] = len(parts)
+    fronts: List[bytes] = []
+    for part in parts:
+        front_png, w = render_png(template, recipient, part, dpi=dpi)
+        fronts.append(front_png)
+        if w.get("text_overflow"):
+            warnings["text_overflow"] = True
+        if w.get("name_overflow"):
+            warnings["name_overflow"] = True
+    back = render_back_png(template, dpi=dpi) if (include_back and template.has_back) else None
+    pdf_bytes = render_combined_pdf(template, fronts, back)
+    return {
+        "parts": parts,
+        "fronts": fronts,
+        "back": back,
+        "pdf": pdf_bytes,
+        "warnings": warnings,
+    }
+
+
+def render_combined_pdf(
+    template: Template,
+    fronts: List[bytes],
+    back: Optional[bytes],
+) -> bytes:
+    """PDF con páginas (frente1, [reverso], frente2, [reverso], …).
+
+    Una página de reverso se intercala después de cada frente cuando hay
+    reverso disponible, de modo que cada tarjeta se imprime dúplex como un
+    par anverso/reverso contiguo.
+    """
+    from reportlab.lib.utils import ImageReader
+
+    page_w_pt = template.width_mm * mm
+    page_h_pt = template.height_mm * mm
+
+    out = io.BytesIO()
+    c = rl_canvas.Canvas(out, pagesize=(page_w_pt, page_h_pt))
+
+    back_reader = ImageReader(io.BytesIO(back)) if back else None
+    for front in fronts:
+        c.drawImage(
+            ImageReader(io.BytesIO(front)),
+            0,
+            0,
+            width=page_w_pt,
+            height=page_h_pt,
+            preserveAspectRatio=False,
+            mask="auto",
+        )
+        c.showPage()
+        if back_reader is not None:
+            c.drawImage(
+                back_reader,
+                0,
+                0,
+                width=page_w_pt,
+                height=page_h_pt,
+                preserveAspectRatio=False,
+                mask="auto",
+            )
+            c.showPage()
+    c.save()
+    return out.getvalue()
+
+
 def render_pdf(
     template: Template,
     recipient: str,

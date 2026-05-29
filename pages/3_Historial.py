@@ -84,9 +84,14 @@ def _render_dedication_text_block(d, *, key_prefix: str = "") -> None:
 def _build_a4_imposed_pdf(signature: tuple, include_crop_guides: bool) -> tuple:
     """Compone un único PDF A4 con todas las dedicatorias indicadas
     intercalando anversos y reversos (cuadrícula 2×2). `signature` es una
-    tupla inmutable de (id, png_path, back_png_path, card_w_mm, card_h_mm,
-    template_id) por cada tarjeta seleccionada para que Streamlit pueda
-    cachear el resultado.
+    tupla inmutable de (id, png_path, back_png_path, extra_png_paths_tuple,
+    card_w_mm, card_h_mm, template_id) por cada tarjeta seleccionada para
+    que Streamlit pueda cachear el resultado.
+
+    Cuando una dedicatoria está partida en varias tarjetas (no cabía entera),
+    `extra_png_paths_tuple` lleva los frentes de la parte 2 en adelante. Se
+    imponen consecutivamente en la cuadrícula 2×2, de modo que el reverso
+    de la hoja par cae sobre cada una de las partes en el orden correcto.
 
     Si ninguna dedicatoria seleccionada trajera el reverso ya renderizado
     (caso típico: se añadió el reverso a la plantilla *después* de
@@ -108,7 +113,7 @@ def _build_a4_imposed_pdf(signature: tuple, include_crop_guides: bool) -> tuple:
     sizes: set = set()
     template_ids_seen: list = []
 
-    for _did, png_path, back_path, w_mm, h_mm, template_id in signature:
+    for _did, png_path, back_path, extra_paths, w_mm, h_mm, template_id in signature:
         if w_mm and h_mm:
             sizes.add((round(float(w_mm), 1), round(float(h_mm), 1)))
             if card_w is None:
@@ -123,6 +128,13 @@ def _build_a4_imposed_pdf(signature: tuple, include_crop_guides: bool) -> tuple:
         except Exception:  # noqa: BLE001
             missing += 1
             continue
+        # Frentes adicionales si la dedicatoria estaba partida en varias tarjetas.
+        for extra in (extra_paths or ()):
+            try:
+                front_bytes_list.append(storage.get(extra))
+            except Exception:  # noqa: BLE001
+                missing += 1
+                continue
         if back_bytes is None and back_path:
             try:
                 back_bytes = storage.get(back_path)
@@ -637,6 +649,7 @@ with tab_rendered:
                             d.id,
                             d.card_png_path,
                             d.card_back_png_path,
+                            tuple(d.card_extra_png_paths or ()),
                             (d.template_snapshot or {}).get("width_mm"),
                             (d.template_snapshot or {}).get("height_mm"),
                             d.template_id,
@@ -784,24 +797,42 @@ with tab_rendered:
             with expander:
                 cols = st.columns([3, 4])
                 with cols[0]:
-                    if d.card_back_png_path:
-                        ftab, btab = st.tabs(["📄 Frente", "🔄 Reverso"])
-                        with ftab:
-                            if d.card_png_path:
-                                try:
-                                    st.image(storage.get(d.card_png_path), use_container_width=True)
-                                except Exception as e:  # noqa: BLE001
-                                    st.warning(f"No se pudo cargar el frente: {e}")
-                        with btab:
-                            try:
-                                st.image(storage.get(d.card_back_png_path), use_container_width=True)
-                            except Exception as e:  # noqa: BLE001
-                                st.warning(f"No se pudo cargar el reverso: {e}")
+                    extra_paths = d.card_extra_png_paths or []
+                    has_parts = bool(extra_paths)
+                    front_paths = [d.card_png_path] + list(extra_paths) if d.card_png_path else []
+                    tab_labels: list[str] = []
+                    if has_parts:
+                        tab_labels.extend([f"📄 Parte {i + 1}" for i in range(len(front_paths))])
                     elif d.card_png_path:
+                        tab_labels.append("📄 Frente")
+                    if d.card_back_png_path:
+                        tab_labels.append("🔄 Reverso")
+                    if not tab_labels:
+                        pass
+                    elif len(tab_labels) == 1 and not d.card_back_png_path and front_paths:
                         try:
-                            st.image(storage.get(d.card_png_path), use_container_width=True)
+                            st.image(storage.get(front_paths[0]), use_container_width=True)
                         except Exception as e:  # noqa: BLE001
                             st.warning(f"No se pudo cargar la imagen: {e}")
+                    else:
+                        tabs = st.tabs(tab_labels)
+                        for idx, fpath in enumerate(front_paths):
+                            with tabs[idx]:
+                                try:
+                                    st.image(storage.get(fpath), use_container_width=True)
+                                except Exception as e:  # noqa: BLE001
+                                    st.warning(f"No se pudo cargar el frente: {e}")
+                        if d.card_back_png_path:
+                            with tabs[-1]:
+                                try:
+                                    st.image(storage.get(d.card_back_png_path), use_container_width=True)
+                                except Exception as e:  # noqa: BLE001
+                                    st.warning(f"No se pudo cargar el reverso: {e}")
+                    if has_parts:
+                        st.caption(
+                            f"📑 Esta dedicatoria está dividida en **{len(front_paths)} tarjetas** "
+                            "(el texto no cabía en una sola). El nombre del destinatario aparece en todas."
+                        )
                 with cols[1]:
                     _render_dedication_text_block(d, key_prefix="rendered_")
                     if d.input_mode == "audio":

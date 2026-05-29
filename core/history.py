@@ -52,6 +52,7 @@ def save_generated(
     pdf_bytes: bytes,
     png_bytes: bytes,
     back_png_bytes: Optional[bytes] = None,
+    extra_png_bytes: Optional[List[bytes]] = None,
     audio_bytes: Optional[bytes] = None,
     audio_extension: str = "webm",
     is_generic: bool = False,
@@ -64,12 +65,18 @@ def save_generated(
     png_path = f"{base}/card.png"
     back_png_path: Optional[str] = None
     audio_path: Optional[str] = None
+    extra_paths: List[str] = []
 
     storage.put(pdf_path, pdf_bytes)
     storage.put(png_path, png_bytes)
     if back_png_bytes:
         back_png_path = f"{base}/card_back.png"
         storage.put(back_png_path, back_png_bytes)
+    if extra_png_bytes:
+        for idx, part_bytes in enumerate(extra_png_bytes, start=2):
+            part_path = f"{base}/card_part_{idx}.png"
+            storage.put(part_path, part_bytes)
+            extra_paths.append(part_path)
     if audio_bytes:
         audio_path = f"{base}/audio.{audio_extension.lstrip('.').lower() or 'webm'}"
         storage.put(audio_path, audio_bytes)
@@ -89,6 +96,7 @@ def save_generated(
         card_pdf_path=pdf_path,
         card_png_path=png_path,
         card_back_png_path=back_png_path,
+        card_extra_png_paths=extra_paths,
         contact_id=contact_id,
         audio_path=audio_path,
         is_generic=is_generic,
@@ -149,8 +157,15 @@ def save_pending(
 
 
 def render_pending(dedication_id: str, template: Template) -> Dedication:
-    """Renderiza una dedicatoria pendiente con la plantilla indicada y la marca como 'rendered'."""
-    from core.rendering import render_back_png, render_pdf, render_png
+    """Renderiza una dedicatoria pendiente con la plantilla indicada y la marca como 'rendered'.
+
+    Si el texto no cabe entero en la zona de la plantilla (ni siquiera al
+    tamaño mínimo), se parte en varias tarjetas. El PDF resultante contiene
+    todas las partes intercaladas con el reverso; los PNG van como
+    `card.png` (parte 1) y `card_part_2.png`, `card_part_3.png`, … para las
+    siguientes.
+    """
+    from core.rendering import render_dedication_parts
 
     dedication = get_dedication(dedication_id)
     if dedication is None:
@@ -167,12 +182,18 @@ def render_pending(dedication_id: str, template: Template) -> Dedication:
     png_path = f"{base}/card.png"
     back_png_path: Optional[str] = None
 
-    pdf_bytes, _ = render_pdf(template, dedication.recipient_name, dedication.final_text)
-    png_bytes, _ = render_png(template, dedication.recipient_name, dedication.final_text)
-    back_bytes = render_back_png(template) if template.has_back else None
+    result = render_dedication_parts(
+        template,
+        dedication.recipient_name,
+        dedication.final_text,
+        include_back=template.has_back,
+    )
+    fronts: List[bytes] = result["fronts"]
+    back_bytes = result["back"]
+    pdf_bytes = result["pdf"]
 
     storage.put(pdf_path, pdf_bytes)
-    storage.put(png_path, png_bytes)
+    storage.put(png_path, fronts[0])
     if back_bytes:
         back_png_path = f"{base}/card_back.png"
         storage.put(back_png_path, back_bytes)
@@ -183,12 +204,26 @@ def render_pending(dedication_id: str, template: Template) -> Dedication:
         except Exception:
             pass
 
+    # Limpia extras antiguos (de una versión anterior partida con N partes
+    # distinto) antes de reescribir los nuevos.
+    for old_path in dedication.card_extra_png_paths or []:
+        try:
+            storage.delete(old_path)
+        except Exception:
+            pass
+    new_extra_paths: List[str] = []
+    for idx, part_bytes in enumerate(fronts[1:], start=2):
+        part_path = f"{base}/card_part_{idx}.png"
+        storage.put(part_path, part_bytes)
+        new_extra_paths.append(part_path)
+
     dedication.status = "rendered"
     dedication.template_id = template.id
     dedication.template_snapshot = template.to_dict()
     dedication.card_pdf_path = pdf_path
     dedication.card_png_path = png_path
     dedication.card_back_png_path = back_png_path
+    dedication.card_extra_png_paths = new_extra_paths
     dedication.rendered_at = now_iso()
 
     index = _load_index()
@@ -262,6 +297,7 @@ def unrender_dedication(dedication_id: str) -> Optional[Dedication]:
         dedication.card_pdf_path,
         dedication.card_png_path,
         dedication.card_back_png_path,
+        *(dedication.card_extra_png_paths or []),
     ):
         if path:
             try:
@@ -275,6 +311,7 @@ def unrender_dedication(dedication_id: str) -> Optional[Dedication]:
     dedication.card_pdf_path = None
     dedication.card_png_path = None
     dedication.card_back_png_path = None
+    dedication.card_extra_png_paths = []
     dedication.rendered_at = None
 
     index = _load_index()
