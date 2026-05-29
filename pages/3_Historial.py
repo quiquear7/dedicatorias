@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import csv
+import io
 from datetime import datetime
 
 import streamlit as st
@@ -78,6 +80,32 @@ def _render_dedication_text_block(d, *, key_prefix: str = "") -> None:
         ):
             st.session_state[edit_key] = True
             st.rerun()
+
+
+def _recipients_csv_bytes(deds) -> bytes:
+    """CSV (UTF-8 con BOM para Excel) con dos columnas Nombre,Grupo a partir
+    de una lista de dedicatorias. Deduplica por (nombre, grupo) ignorando
+    mayúsculas y espacios extremos, y ordena por grupo y luego nombre.
+    """
+    seen: set[tuple[str, str]] = set()
+    rows: list[tuple[str, str]] = []
+    for d in deds:
+        name = (d.recipient_name or "").strip()
+        group = (d.recipient_group or "").strip()
+        if not name:
+            continue
+        key = (name.lower(), group.lower())
+        if key in seen:
+            continue
+        seen.add(key)
+        rows.append((name, group))
+    rows.sort(key=lambda r: (r[1].lower(), r[0].lower()))
+    buf = io.StringIO()
+    writer = csv.writer(buf, delimiter=",", quoting=csv.QUOTE_MINIMAL, lineterminator="\n")
+    writer.writerow(["Nombre", "Grupo"])
+    for name, group in rows:
+        writer.writerow([name, group])
+    return buf.getvalue().encode("utf-8-sig")
 
 
 @st.cache_data(show_spinner="Componiendo PDF A4 imprenta…")
@@ -713,6 +741,53 @@ with tab_rendered:
                     use_container_width=True,
                 ):
                     st.session_state["_hist_bulk_confirm_delete"] = True
+
+            # Fila: exportar lista de destinatarios a CSV. Usa la selección si
+            # hay marcadas; si no, toma todas las visibles (las filtradas).
+            csv_source = selected if sel_count > 0 else filtered
+            csv_label_n = len(
+                {
+                    ((d.recipient_name or "").strip().lower(),
+                     (d.recipient_group or "").strip().lower())
+                    for d in csv_source
+                    if (d.recipient_name or "").strip()
+                }
+            )
+            csv_help = (
+                "Descarga un CSV con dos columnas (Nombre, Grupo) de las "
+                "personas únicas. "
+                + (
+                    f"Exporta las **{sel_count} seleccionada(s)** "
+                    f"({csv_label_n} persona(s) única(s))."
+                    if sel_count > 0
+                    else f"Exporta las **{len(filtered)} visibles** "
+                    f"({csv_label_n} persona(s) única(s)). Aplica los filtros "
+                    "laterales para acotar."
+                )
+            )
+            exp_cols = st.columns([2, 1, 2])
+            with exp_cols[1]:
+                if csv_label_n > 0:
+                    st.download_button(
+                        f"📇 CSV destinatarios ({csv_label_n})",
+                        data=_recipients_csv_bytes(csv_source),
+                        file_name="destinatarios.csv",
+                        mime="text/csv",
+                        key="hist_bulk_csv",
+                        use_container_width=True,
+                        help=csv_help,
+                    )
+                else:
+                    st.button(
+                        "📇 CSV destinatarios (0)",
+                        key="hist_bulk_csv_disabled",
+                        disabled=True,
+                        use_container_width=True,
+                        help=(
+                            "No hay destinatarios para exportar con los filtros "
+                            "actuales."
+                        ),
+                    )
 
             # Confirmación: mover a pendientes
             if st.session_state.get("_hist_bulk_confirm_unrender") and selected:

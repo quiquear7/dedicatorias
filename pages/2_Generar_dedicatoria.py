@@ -162,7 +162,7 @@ if step == 1:
         "¿Cómo quieres elegir al destinatario?",
         options=["Contacto existente", "Nuevo contacto", "Varios destinatarios"],
         horizontal=True,
-        index=0 if contacts else 1,
+        index=1,
         help=(
             "«Varios destinatarios» genera una tarjeta independiente por persona "
             "compartiendo el mismo texto de dedicatoria."
@@ -238,7 +238,7 @@ if step == 1:
 
         selected_existing: List[Contact] = []
         if contacts:
-            with st.expander("👤 Elegir entre tus contactos existentes", expanded=True):
+            with st.expander("👤 Elegir entre tus contactos existentes", expanded=False):
                 groups = sorted({c.group for c in contacts if c.group})
                 group_filter = st.selectbox(
                     "Filtrar por grupo",
@@ -261,7 +261,7 @@ if step == 1:
         else:
             st.info("Aún no tienes contactos guardados. Añádelos abajo manualmente.")
 
-        with st.expander("✍️ Añadir destinatarios nuevos (uno por línea)", expanded=not contacts):
+        with st.expander("✍️ Añadir destinatarios nuevos (uno por línea)", expanded=True):
             existing_groups = contacts_module.list_groups()
             extra_names_raw = st.text_area(
                 "Nombres adicionales",
