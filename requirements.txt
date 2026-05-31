@@ -1,4 +1,5 @@
 streamlit>=1.33
+extra-streamlit-components>=0.1.71
 openai>=1.12
 google-genai>=0.5
 pillow>=10.0
