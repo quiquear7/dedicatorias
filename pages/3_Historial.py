@@ -108,6 +108,35 @@ def _recipients_csv_bytes(deds) -> bytes:
     return buf.getvalue().encode("utf-8-sig")
 
 
+def _recipients_grouped_text_bytes(deds) -> bytes:
+    """Texto plano (UTF-8 con BOM para que Excel/Notepad respeten tildes) con
+    los destinatarios agrupados por grupo. Cada grupo encabeza una sección y
+    debajo van los nombres únicos ordenados alfabéticamente. Los que no tengan
+    grupo van al final bajo «(Sin grupo)». Deduplica por (nombre, grupo).
+    """
+    buckets: dict[str, set[str]] = {}
+    for d in deds:
+        name = (d.recipient_name or "").strip()
+        if not name:
+            continue
+        group = (d.recipient_group or "").strip() or "(Sin grupo)"
+        buckets.setdefault(group, set()).add(name)
+    no_group = "(Sin grupo)"
+    ordered_groups = sorted(
+        (g for g in buckets if g != no_group), key=str.lower
+    )
+    if no_group in buckets:
+        ordered_groups.append(no_group)
+    lines: list[str] = []
+    for group in ordered_groups:
+        lines.append(group)
+        lines.append("=" * len(group))
+        for name in sorted(buckets[group], key=str.lower):
+            lines.append(f"- {name}")
+        lines.append("")
+    return ("\n".join(lines)).encode("utf-8-sig")
+
+
 @st.cache_data(show_spinner="Componiendo PDF A4 imprenta…")
 def _build_a4_imposed_pdf(signature: tuple, include_crop_guides: bool) -> tuple:
     """Compone un único PDF A4 con todas las dedicatorias indicadas
@@ -765,7 +794,16 @@ with tab_rendered:
                     "laterales para acotar."
                 )
             )
-            exp_cols = st.columns([2, 1, 2])
+            grouped_help = (
+                "Descarga un .txt con los destinatarios agrupados por grupo "
+                "(título del grupo y debajo los nombres). "
+                + (
+                    f"Exporta las **{sel_count} seleccionada(s)**."
+                    if sel_count > 0
+                    else f"Exporta las **{len(filtered)} visibles**."
+                )
+            )
+            exp_cols = st.columns([1, 1, 1, 1])
             with exp_cols[1]:
                 if csv_label_n > 0:
                     st.download_button(
@@ -781,6 +819,28 @@ with tab_rendered:
                     st.button(
                         "📇 CSV destinatarios (0)",
                         key="hist_bulk_csv_disabled",
+                        disabled=True,
+                        use_container_width=True,
+                        help=(
+                            "No hay destinatarios para exportar con los filtros "
+                            "actuales."
+                        ),
+                    )
+            with exp_cols[2]:
+                if csv_label_n > 0:
+                    st.download_button(
+                        f"📋 Listado por grupo ({csv_label_n})",
+                        data=_recipients_grouped_text_bytes(csv_source),
+                        file_name="destinatarios_por_grupo.txt",
+                        mime="text/plain",
+                        key="hist_bulk_grouped",
+                        use_container_width=True,
+                        help=grouped_help,
+                    )
+                else:
+                    st.button(
+                        "📋 Listado por grupo (0)",
+                        key="hist_bulk_grouped_disabled",
                         disabled=True,
                         use_container_width=True,
                         help=(
