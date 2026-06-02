@@ -278,6 +278,41 @@ with tab_pending:
             f"**{len(pending_list)}** pendientes por generar · "
             f"**{len(rendered_list)}** ya generadas (puedes re-renderizar con otra plantilla)."
         )
+
+        # Exportar listado de destinatarios agrupado por grupo (.txt).
+        # Toma TODO lo que se ve en esta pestaña (pendientes + generadas).
+        pending_grouped_n = len(
+            {
+                ((d.recipient_name or "").strip().lower(),
+                 (d.recipient_group or "").strip().lower())
+                for d in display_list
+                if (d.recipient_name or "").strip()
+            }
+        )
+        gexp_cols = st.columns([2, 1, 2])
+        with gexp_cols[1]:
+            if pending_grouped_n > 0:
+                st.download_button(
+                    f"📋 Listado por grupo ({pending_grouped_n})",
+                    data=_recipients_grouped_text_bytes(display_list),
+                    file_name="destinatarios_por_grupo.txt",
+                    mime="text/plain",
+                    key="pending_bulk_grouped",
+                    use_container_width=True,
+                    help=(
+                        "Descarga un .txt con todos los destinatarios "
+                        "(pendientes + generadas) agrupados por grupo: "
+                        "título del grupo y debajo los nombres únicos."
+                    ),
+                )
+            else:
+                st.button(
+                    "📋 Listado por grupo (0)",
+                    key="pending_bulk_grouped_disabled",
+                    disabled=True,
+                    use_container_width=True,
+                )
+
         if not templates_all:
             st.warning("Necesitas tener al menos una plantilla creada en la página «Plantillas» para renderizar.")
         else:
@@ -794,16 +829,7 @@ with tab_rendered:
                     "laterales para acotar."
                 )
             )
-            grouped_help = (
-                "Descarga un .txt con los destinatarios agrupados por grupo "
-                "(título del grupo y debajo los nombres). "
-                + (
-                    f"Exporta las **{sel_count} seleccionada(s)**."
-                    if sel_count > 0
-                    else f"Exporta las **{len(filtered)} visibles**."
-                )
-            )
-            exp_cols = st.columns([1, 1, 1, 1])
+            exp_cols = st.columns([2, 1, 2])
             with exp_cols[1]:
                 if csv_label_n > 0:
                     st.download_button(
@@ -819,28 +845,6 @@ with tab_rendered:
                     st.button(
                         "📇 CSV destinatarios (0)",
                         key="hist_bulk_csv_disabled",
-                        disabled=True,
-                        use_container_width=True,
-                        help=(
-                            "No hay destinatarios para exportar con los filtros "
-                            "actuales."
-                        ),
-                    )
-            with exp_cols[2]:
-                if csv_label_n > 0:
-                    st.download_button(
-                        f"📋 Listado por grupo ({csv_label_n})",
-                        data=_recipients_grouped_text_bytes(csv_source),
-                        file_name="destinatarios_por_grupo.txt",
-                        mime="text/plain",
-                        key="hist_bulk_grouped",
-                        use_container_width=True,
-                        help=grouped_help,
-                    )
-                else:
-                    st.button(
-                        "📋 Listado por grupo (0)",
-                        key="hist_bulk_grouped_disabled",
                         disabled=True,
                         use_container_width=True,
                         help=(
