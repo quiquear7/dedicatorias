@@ -10,7 +10,7 @@ from core import history as history_module
 from core import templates as templates_module
 from core.auth import logout_button, require_login
 from core.config import get_config, get_storage
-from core.rendering import render_preview
+from core.rendering import POSTAL_PAPER_MM, render_padded_pdf, render_preview
 
 
 def _render_dedication_text_block(d, *, key_prefix: str = "") -> None:
@@ -1038,6 +1038,63 @@ with tab_rendered:
                             help="Borra la dedicatoria por completo: texto, audio y archivos renderizados.",
                         ):
                             st.session_state[f"_confirm_del_{d.id}"] = True
+
+                    snap = d.template_snapshot or {}
+                    snap_w = snap.get("width_mm")
+                    snap_h = snap.get("height_mm")
+                    paper_w_mm, paper_h_mm = POSTAL_PAPER_MM
+                    fits_postal = (
+                        d.card_png_path
+                        and snap_w
+                        and snap_h
+                        and max(float(snap_w), float(snap_h)) <= max(paper_w_mm, paper_h_mm) + 1e-6
+                        and min(float(snap_w), float(snap_h)) <= min(paper_w_mm, paper_h_mm) + 1e-6
+                    )
+                    if fits_postal:
+                        padded_key = f"_padded_pdf_{d.id}"
+                        bytes_ready = st.session_state.get(padded_key)
+                        pad_cols = st.columns([2, 3])
+                        with pad_cols[0]:
+                            if bytes_ready is None:
+                                if st.button(
+                                    "🖨️ Preparar PDF 10×15",
+                                    key=f"prep_padded_{d.id}",
+                                    use_container_width=True,
+                                    help=(
+                                        "Centra la tarjeta en una hoja postal/foto de "
+                                        "10×15 cm. Imprime al 100% / sin escalar y "
+                                        "recorta luego el margen blanco."
+                                    ),
+                                ):
+                                    try:
+                                        fronts_bytes = [storage.get(d.card_png_path)]
+                                        for extra in (d.card_extra_png_paths or ()):
+                                            fronts_bytes.append(storage.get(extra))
+                                        back_b = (
+                                            storage.get(d.card_back_png_path)
+                                            if d.card_back_png_path
+                                            else None
+                                        )
+                                        st.session_state[padded_key] = render_padded_pdf(
+                                            fronts_bytes,
+                                            back_b,
+                                            card_width_mm=float(snap_w),
+                                            card_height_mm=float(snap_h),
+                                            paper_width_mm=paper_w_mm,
+                                            paper_height_mm=paper_h_mm,
+                                        )
+                                        st.rerun()
+                                    except Exception as e:  # noqa: BLE001
+                                        st.error(f"No se pudo construir el PDF 10×15: {e}")
+                            else:
+                                st.download_button(
+                                    "⬇️ PDF 10×15",
+                                    data=bytes_ready,
+                                    file_name=f"dedicatoria_{d.recipient_name.replace(' ', '_')}_10x15.pdf",
+                                    mime="application/pdf",
+                                    key=f"padded_dl_{d.id}",
+                                    use_container_width=True,
+                                )
 
                     if st.session_state.get(f"_confirm_del_{d.id}"):
                         st.warning(

@@ -679,6 +679,80 @@ def render_combined_pdf(
     return out.getvalue()
 
 
+POSTAL_PAPER_MM: Tuple[float, float] = (100.0, 150.0)
+
+
+def render_padded_pdf(
+    fronts: List[bytes],
+    back: Optional[bytes],
+    *,
+    card_width_mm: float,
+    card_height_mm: float,
+    paper_width_mm: float,
+    paper_height_mm: float,
+) -> bytes:
+    """PDF con cada tarjeta centrada en una hoja mayor (p. ej. 10×15 cm),
+    intercalando reverso entre frentes si lo hay.
+
+    Pensado para imprimir tarjetas pequeñas (p. ej. 8×13) en papel postal/foto
+    estándar (10×15) sin tocar la escala: queda un margen blanco simétrico
+    para recortar con guillotina o cúter.
+
+    Si el papel no cabe la tarjeta tal cual pero la cabría con la orientación
+    contraria, se intercambian las dimensiones del papel automáticamente para
+    no obligar al llamante a hacerlo.
+    """
+    from reportlab.lib.utils import ImageReader
+
+    fits_as_is = paper_width_mm + 1e-6 >= card_width_mm and paper_height_mm + 1e-6 >= card_height_mm
+    fits_swapped = paper_height_mm + 1e-6 >= card_width_mm and paper_width_mm + 1e-6 >= card_height_mm
+    if not fits_as_is and fits_swapped:
+        paper_width_mm, paper_height_mm = paper_height_mm, paper_width_mm
+    elif not fits_as_is:
+        raise ValueError(
+            f"El papel ({paper_width_mm:.0f}×{paper_height_mm:.0f} mm) es más "
+            f"pequeño que la tarjeta ({card_width_mm:.0f}×{card_height_mm:.0f} mm); "
+            "no se puede centrar sin escalar."
+        )
+
+    page_w_pt = paper_width_mm * mm
+    page_h_pt = paper_height_mm * mm
+    card_w_pt = card_width_mm * mm
+    card_h_pt = card_height_mm * mm
+
+    x_pt = (page_w_pt - card_w_pt) / 2.0
+    y_pt = (page_h_pt - card_h_pt) / 2.0
+
+    out = io.BytesIO()
+    c = rl_canvas.Canvas(out, pagesize=(page_w_pt, page_h_pt))
+
+    back_reader = ImageReader(io.BytesIO(back)) if back else None
+    for front in fronts:
+        c.drawImage(
+            ImageReader(io.BytesIO(front)),
+            x_pt,
+            y_pt,
+            width=card_w_pt,
+            height=card_h_pt,
+            preserveAspectRatio=False,
+            mask="auto",
+        )
+        c.showPage()
+        if back_reader is not None:
+            c.drawImage(
+                back_reader,
+                x_pt,
+                y_pt,
+                width=card_w_pt,
+                height=card_h_pt,
+                preserveAspectRatio=False,
+                mask="auto",
+            )
+            c.showPage()
+    c.save()
+    return out.getvalue()
+
+
 def render_pdf(
     template: Template,
     recipient: str,

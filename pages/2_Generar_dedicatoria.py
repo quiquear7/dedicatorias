@@ -22,7 +22,7 @@ from core.correction import (
 )
 from core.diff import html_diff
 from core.models import Contact, Template
-from core.rendering import render_dedication_parts, render_preview
+from core.rendering import POSTAL_PAPER_MM, render_dedication_parts, render_padded_pdf, render_preview
 from core.transcription import transcribe
 
 st.set_page_config(page_title="Generar dedicatoria", page_icon="✍️", layout="wide")
@@ -1117,6 +1117,39 @@ elif step == 5:
                 use_container_width=True,
                 key=f"dl_parts_zip_{active_idx}",
             )
+
+    paper_w_mm, paper_h_mm = POSTAL_PAPER_MM
+    card_w_mm = float(template.width_mm)
+    card_h_mm = float(template.height_mm)
+    fits_postal = (
+        (paper_w_mm + 1e-6 >= card_w_mm and paper_h_mm + 1e-6 >= card_h_mm)
+        or (paper_h_mm + 1e-6 >= card_w_mm and paper_w_mm + 1e-6 >= card_h_mm)
+    )
+    if fits_postal:
+        st.caption(
+            f"🖨️ ¿Vas a imprimir en papel 10×15 cm (postal/foto)? La tarjeta "
+            f"({card_w_mm:.0f}×{card_h_mm:.0f} mm) se puede centrar en la hoja "
+            "mayor — imprime al **100% / sin escalar** y recorta luego."
+        )
+        try:
+            padded_pdf = render_padded_pdf(
+                fronts,
+                active["back_png"],
+                card_width_mm=card_w_mm,
+                card_height_mm=card_h_mm,
+                paper_width_mm=paper_w_mm,
+                paper_height_mm=paper_h_mm,
+            )
+            st.download_button(
+                "⬇️ PDF 10×15 (tarjeta centrada en hoja postal)",
+                data=padded_pdf,
+                file_name=f"dedicatoria_{slug}_10x15.pdf",
+                mime="application/pdf",
+                use_container_width=True,
+                key=f"dl_pdf_10x15_{active_idx}",
+            )
+        except ValueError as exc:
+            st.caption(f"ℹ️ {exc}")
 
     if multi:
         st.divider()
